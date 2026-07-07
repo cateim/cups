@@ -9,166 +9,241 @@ on:
   schedule:
     - cron: '0 3 * * 0' # Todo domingo às 03:00 UTC
 
+permissions:
+  contents: read
+
+concurrency:
+  group: cups-build
+  cancel-in-progress: false
+
 env:
   IMAGE_NAME: cateim/cups
 
 jobs:
-  build:
+  # ---------------------------------------------------------------------------
+  # 1) PREPARE: descobre a versao do CUPS e decide se cada variante (ubuntu/debian)
+  #    precisa buildar. Roda 1x em amd64 -- a versao do pacote e' identica nas
+  #    arquiteturas. Emite MATRIZES ja filtradas (so as combinacoes necessarias)
+  #    para os jobs build e merge -- assim o gate usa so `needs` (o `matrix` NAO
+  #    pode ser referenciado num `if:` de nivel de job).
+  # ---------------------------------------------------------------------------
+  prepare:
     runs-on: ubuntu-latest
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Build 1: Ubuntu (será o 'latest')
-          - os: ubuntu
-            dockerfile: Dockerfile.ubuntu
-            base_image: ubuntu:rolling
-
-          # Build 2: Debian
-          - os: debian
-            dockerfile: Dockerfile.debian
-            base_image: debian:trixie-slim
-
+    outputs:
+      any_needed:   ${{ steps.plan.outputs.any_needed }}
+      build_matrix: ${{ steps.plan.outputs.build_matrix }}
+      merge_matrix: ${{ steps.plan.outputs.merge_matrix }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 2
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to Docker Hub
+      # Login cedo: autentica os `docker run` de deteccao de versao (evita o
+      # rate-limit anonimo do Docker Hub, que pode dar 429 em runner movimentado).
+      - name: Login no Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Descobre a versão real do CUPS direto no repositório
-        id: get_version
-        run: |
-          VERSION=$(docker run --rm ${{ matrix.base_image }} sh -c "apt-get update -qq >/dev/null && apt-cache show cups | grep -m1 '^Version:' | awk '{print \$2}' | sed 's/^[0-9]://' | cut -d'-' -f1")
-          echo "cups_version=$VERSION" >> $GITHUB_OUTPUT
-          echo "A versão mais recente na base ${{ matrix.os }} é: $VERSION"
-
-      - name: Verifica se o build é necessário
-        id: check_needed
+      - name: Montar matrizes (versao + build necessario) por variante
+        id: plan
         env:
           REPO: ${{ env.IMAGE_NAME }}
-          OS_NAME: ${{ matrix.os }}
-          DOCKERFILE_NAME: ${{ matrix.dockerfile }}
-          CUPS_VER: ${{ steps.get_version.outputs.cups_version }}
           EVENT_NAME: ${{ github.event_name }}
           BEFORE_SHA: ${{ github.event.before }}
           CURRENT_SHA: ${{ github.sha }}
         run: |
-          TAG="${CUPS_VER}-${OS_NAME}"
-
-          # Consulta com retry exponencial; só aceita 200 ou 404 como respostas válidas.
+          # Consulta com retry exponencial; so aceita 200 ou 404 como respostas validas.
           check_tag() {
-            local url="$1"
-            local status="000"
+            local url="$1" status="000"
             for attempt in 1 2 3 4; do
               status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "$url" 2>/dev/null)
               [ -z "$status" ] && status="000"
-              if [ "$status" = "200" ] || [ "$status" = "404" ]; then
-                echo "$status"
-                return 0
-              fi
-              echo "Tentativa $attempt em $url falhou (status: $status). Aguardando $((attempt * 5))s..." >&2
-              sleep $((attempt * 5))
+              if [ "$status" = "200" ] || [ "$status" = "404" ]; then echo "$status"; return 0; fi
+              echo "Tentativa $attempt em $url falhou (status: $status). Aguardando $((attempt*5))s..." >&2
+              sleep $((attempt*5))
             done
-            echo "$status"
-            return 1
+            echo "$status"; return 1
           }
 
-          # Ponto 4: se o Dockerfile mudou neste push, força o build
-          if [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
-            CHANGED=$(git diff --name-only "$BEFORE_SHA" "$CURRENT_SHA" 2>/dev/null || echo "")
-            if echo "$CHANGED" | grep -qx "$DOCKERFILE_NAME"; then
-              echo "BUILD_NEEDED=true" >> $GITHUB_OUTPUT
-              echo "$DOCKERFILE_NAME foi modificado neste push. Build forçado."
-              exit 0
+          declare -A BASE=( [ubuntu]="ubuntu:rolling" [debian]="debian:trixie-slim" )
+          declare -A DF=(   [ubuntu]="Dockerfile.ubuntu" [debian]="Dockerfile.debian" )
+          declare -A RUNNER=( [amd64]="ubuntu-latest" [arm64]="ubuntu-24.04-arm" )
+
+          BUILD='[]'   # combinacoes os x arch a buildar
+          MERGE='[]'   # variantes a publicar (com a versao)
+          ANY=false
+
+          for OS in ubuntu debian; do
+            BASE_IMAGE="${BASE[$OS]}"; DOCKERFILE="${DF[$OS]}"
+
+            # Descobre a versao real do CUPS direto na base (mesma em amd64/arm64)
+            VER=$(docker run --rm "$BASE_IMAGE" sh -c "apt-get update -qq >/dev/null && apt-cache show cups | grep -m1 '^Version:' | awk '{print \$2}' | sed 's/^[0-9]://' | cut -d'-' -f1")
+            if [ -z "$VER" ]; then echo "::error::Nao consegui detectar a versao do CUPS em $BASE_IMAGE"; exit 1; fi
+            TAG="${VER}-${OS}"
+            echo "[$OS] versao=$VER tag=$TAG"
+
+            NEEDED=false; REASON=""
+
+            # Dispatch manual sempre builda
+            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then NEEDED=true; REASON="workflow_dispatch"; fi
+
+            # Forca build se o Dockerfile desta variante mudou neste push
+            if [ "$NEEDED" != "true" ] && [ "$EVENT_NAME" = "push" ] && [ -n "${BEFORE_SHA:-}" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+              CHANGED=$(git diff --name-only "$BEFORE_SHA" "$CURRENT_SHA" 2>/dev/null || echo "")
+              if echo "$CHANGED" | grep -qx "$DOCKERFILE"; then NEEDED=true; REASON="$DOCKERFILE modificado"; fi
             fi
-          fi
 
-          # Ponto 1: verifica tag versionada com tratamento de erro robusto
-          VERSION_STATUS=$(check_tag "https://hub.docker.com/v2/repositories/${REPO}/tags/${TAG}") || {
-            echo "::error::Falha ao consultar Docker Hub para tag '$TAG' após 4 tentativas (último status: $VERSION_STATUS)."
-            exit 1
-          }
+            if [ "$NEEDED" != "true" ]; then
+              # Ponto 1: tag versionada existe?
+              VS=$(check_tag "https://hub.docker.com/v2/repositories/${REPO}/tags/${TAG}") || { echo "::error::Falha ao consultar tag '$TAG'."; exit 1; }
+              if [ "$VS" = "404" ]; then NEEDED=true; REASON="tag '$TAG' ausente"; fi
 
-          # Ponto 2: para ubuntu, 'latest' tem que apontar para o MESMO digest do '<v>-ubuntu'.
-          # Se estiver ausente OU dessincronizado, força rebuild (que republica os dois juntos).
-          LATEST_OK=true
-          LATEST_REASON=""
-          if [ "$OS_NAME" = "ubuntu" ]; then
-            LATEST_STATUS=$(check_tag "https://hub.docker.com/v2/repositories/${REPO}/tags/latest") || {
-              echo "::error::Falha ao consultar 'latest' após 4 tentativas (último status: $LATEST_STATUS)."
-              exit 1
-            }
-
-            if [ "$LATEST_STATUS" = "404" ]; then
-              LATEST_OK=false
-              LATEST_REASON="tag 'latest' ausente"
-            elif [ "$VERSION_STATUS" = "200" ]; then
-              VERSION_DIGEST=$(curl -fsS --max-time 30 "https://hub.docker.com/v2/repositories/${REPO}/tags/${TAG}" 2>/dev/null | jq -r '.digest // ""')
-              LATEST_DIGEST=$(curl -fsS --max-time 30 "https://hub.docker.com/v2/repositories/${REPO}/tags/latest" 2>/dev/null | jq -r '.digest // ""')
-              if [ -z "$VERSION_DIGEST" ] || [ -z "$LATEST_DIGEST" ]; then
-                LATEST_OK=false
-                LATEST_REASON="não foi possível ler digests para comparar"
-              elif [ "$VERSION_DIGEST" != "$LATEST_DIGEST" ]; then
-                LATEST_OK=false
-                LATEST_REASON="'latest' dessincronizado de '$TAG' (digests divergentes)"
+              # Ponto 2: 'latest' (so ubuntu) deve apontar pro MESMO digest do <v>-ubuntu
+              if [ "$OS" = "ubuntu" ] && [ "$NEEDED" != "true" ]; then
+                LS=$(check_tag "https://hub.docker.com/v2/repositories/${REPO}/tags/latest") || { echo "::error::Falha ao consultar 'latest'."; exit 1; }
+                if [ "$LS" = "404" ]; then
+                  NEEDED=true; REASON="'latest' ausente"
+                elif [ "$VS" = "200" ]; then
+                  VD=$(curl -fsS --max-time 30 "https://hub.docker.com/v2/repositories/${REPO}/tags/${TAG}" 2>/dev/null | jq -r '.digest // ""')
+                  LD=$(curl -fsS --max-time 30 "https://hub.docker.com/v2/repositories/${REPO}/tags/latest" 2>/dev/null | jq -r '.digest // ""')
+                  if [ -z "$VD" ] || [ -z "$LD" ]; then NEEDED=true; REASON="nao consegui ler digests"; elif [ "$VD" != "$LD" ]; then NEEDED=true; REASON="'latest' dessincronizado de '$TAG'"; fi
+                fi
               fi
             fi
-          fi
 
-          # Decisão
-          if [ "$VERSION_STATUS" = "200" ] && [ "$LATEST_OK" = "true" ]; then
-            echo "BUILD_NEEDED=false" >> $GITHUB_OUTPUT
-            echo "Tag '$TAG' já publicada e sincronizada com 'latest' (quando aplicável). Pulando build."
-          else
-            echo "BUILD_NEEDED=true" >> $GITHUB_OUTPUT
-            if [ "$VERSION_STATUS" = "404" ]; then
-              echo "Tag '$TAG' ausente. Build necessário."
-            fi
-            if [ "$LATEST_OK" = "false" ]; then
-              echo "$LATEST_REASON. Build do ubuntu necessário para ressincronizar 'latest'."
-            fi
-          fi
+            echo "[$OS] needed=$NEEDED ${REASON:+($REASON)}"
 
-      - name: Gera as tags dinamicamente
+            if [ "$NEEDED" = "true" ]; then
+              ANY=true
+              for ARCH in amd64 arm64; do
+                BUILD=$(echo "$BUILD" | jq -c \
+                  --arg os "$OS" --arg df "$DOCKERFILE" --arg arch "$ARCH" --arg runner "${RUNNER[$ARCH]}" \
+                  '. + [{os:$os, dockerfile:$df, arch:$arch, runner:$runner}]')
+              done
+              MERGE=$(echo "$MERGE" | jq -c --arg os "$OS" --arg v "$VER" '. + [{os:$os, version:$v}]')
+            fi
+          done
+
+          echo "any_needed=$ANY" >> "$GITHUB_OUTPUT"
+          echo "build_matrix={\"include\":$BUILD}" >> "$GITHUB_OUTPUT"
+          echo "merge_matrix={\"include\":$MERGE}" >> "$GITHUB_OUTPUT"
+          echo "any_needed=$ANY"
+          echo "build_matrix={\"include\":$BUILD}"
+          echo "merge_matrix={\"include\":$MERGE}"
+
+  # ---------------------------------------------------------------------------
+  # 2) BUILD: cada (variante x arquitetura) NECESSARIA no seu runner NATIVO ->
+  #    sem QEMU. Push POR DIGEST (sem tag); o merge junta os digests num manifesto.
+  #    A matriz ja vem filtrada do prepare; o gate usa so `needs` (permitido).
+  # ---------------------------------------------------------------------------
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.any_needed == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60   # teto de seguranca: nenhum build (nativo, apt) deve chegar perto disso
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login no Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & push por digest (${{ matrix.os }}/${{ matrix.arch }})
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./${{ matrix.dockerfile }}
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.os }}-${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.os }}-${{ matrix.arch }},mode=max
+          # Sem attestation de provenance -> manifesto multi-arch limpo (so amd64+arm64,
+          # sem entradas 'unknown/unknown' que o imagetools carregaria pro manifesto final).
+          provenance: false
+
+      - name: Exportar digest
+        run: |
+          mkdir -p /tmp/digests
+          echo "${{ steps.build.outputs.digest }}" > "/tmp/digests/${{ matrix.arch }}.txt"
+
+      - name: Subir digest como artefato
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.os }}-${{ matrix.arch }}
+          path: /tmp/digests/*.txt
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # 3) MERGE: junta os digests amd64+arm64 de cada variante num unico manifesto
+  #    multi-arch e aplica as tags (latest so no ubuntu).
+  # ---------------------------------------------------------------------------
+  merge:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.any_needed == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.merge_matrix) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar digests da variante
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digests-${{ matrix.os }}-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login no Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Gerar tags
         id: meta
-        if: steps.check_needed.outputs.BUILD_NEEDED == 'true'
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest,enable=${{ matrix.os == 'ubuntu' }}
-            type=raw,value=${{ steps.get_version.outputs.cups_version }}-${{ matrix.os }}
+            type=raw,value=${{ matrix.version }}-${{ matrix.os }}
 
-      - name: Build and push ${{ matrix.os }}
-        if: steps.check_needed.outputs.BUILD_NEEDED == 'true'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./${{ matrix.dockerfile }}
-          push: true
-          platforms: linux/amd64, linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.os }}
-          cache-to: type=gha,scope=${{ matrix.os }},mode=max
+      - name: Criar manifesto multi-arch e publicar as tags
+        run: |
+          set -euo pipefail
+          REFS=""
+          for f in /tmp/digests/*.txt; do
+            D=$(cat "$f")
+            REFS="$REFS ${IMAGE_NAME}@${D}"
+          done
+          TAGFLAGS=$(jq -r '.tags[] | "-t " + .' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          echo "Criando manifesto para: $(jq -rc '.tags' <<< "$DOCKER_METADATA_OUTPUT_JSON")"
+          docker buildx imagetools create $TAGFLAGS $REFS
+          for t in $(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON"); do
+            echo "== $t =="
+            docker buildx imagetools inspect "$t" | grep -E 'Name|Platform' || true
+          done
 
+  # ---------------------------------------------------------------------------
+  # 4) CLEANUP: remove tags antigas do Docker Hub (identico ao seu original).
+  # ---------------------------------------------------------------------------
   cleanup:
-    needs: build
+    needs: merge
     if: always()
     runs-on: ubuntu-latest
     steps:

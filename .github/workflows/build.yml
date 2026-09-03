@@ -733,16 +733,39 @@ jobs:
             if [ "$PUBLICOU" = "1" ]; then
               NOVO=$(mktemp)
               {
+                # Cabecalho so na criacao do arquivo: nas vezes seguintes o
+                # bloco novo entra ACIMA do que ja existe, e um cabecalho por
+                # publicacao desceria junto com o corpo antigo.
+                if [ ! -f BUILDS.md ]; then
+                  printf '# Publicacoes\n\n'
+                  printf 'Uma linha por publicacao, mais recente em cima. A lista completa de\n'
+                  printf 'pacotes e de CVEs de cada reconstrucao esta no relatorio linkado e nas\n'
+                  printf 'annotations OCI da imagem.\n\n'
+                fi
                 echo "## $(date -u +%Y-%m-%d) - reconstrucao"
                 echo
                 for S in /tmp/record/status-*.json; do
                   jq -e '.published' "$S" >/dev/null || continue
-                  jq -r '"- `\(.tag)`: \(.packages.changed) pacote(s) atualizado(s)."
-                         + (if .cves != "" then " CVEs: \(.cves)." else "" end)
+                  # As CVEs entram TRUNCADAS aqui: uma reconstrucao de quatro
+                  # meses cita mais de 160, e a lista inteira numa linha so
+                  # deixa o BUILDS.md ilegivel logo na primeira publicacao. A
+                  # lista completa vive no relatorio .md e na annotation.
+                  jq -r '(.cves | if . == "" then [] else split(",") end) as $c
+                         | "- `\(.tag)`: \(.packages.changed) atualizado(s)"
+                         + ", \(.packages.added) novo(s), \(.packages.removed) removido(s)"
+                         + " de \(.packages.total) pacotes."
+                         + (if ($c | length) > 0
+                            then " CVEs: " + (($c[0:6]) | join(", "))
+                                 + (if ($c | length) > 6
+                                    then " e mais \(($c | length) - 6)"
+                                    else "" end) + "."
+                            else "" end)
                          + " [relatorio](.github/builds/\(.tag).md)"' "$S"
                 done
                 echo
-                [ -f BUILDS.md ] && cat BUILDS.md
+                # Reaproveita so o CORPO: o cabecalho ja foi escrito acima, e
+                # copiar o arquivo inteiro o duplicaria a cada publicacao.
+                [ -f BUILDS.md ] && sed -n '/^## /,$p' BUILDS.md
               } > "$NOVO"
               mv "$NOVO" BUILDS.md
             fi

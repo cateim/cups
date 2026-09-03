@@ -1,19 +1,52 @@
 name: Docker Publish
 
+# =============================================================================
+# Contrato deste workflow, uma frase por item:
+#
+#   (a) RECONSTROI SEMPRE no agendamento semanal, mas PUBLICA so quando o
+#       inventario de pacotes realmente muda. O gatilho nao pode ser a versao do
+#       CUPS nem o digest da base: os Dockerfiles rodam 'apt-get upgrade' contra
+#       o archive VIVO, entao so o diff real depois do build sabe se mudou algo.
+#       Foi exatamente por isso que a imagem ficou congelada de 2026-05-10 ate
+#       2026-09: o gate antigo perguntava "a tag ja existe?" e a resposta era
+#       sempre sim.
+#
+#   (b) TAGS IMUTAVEIS: cada publicacao cunha '<cups>-<os>-<AAAAMMDD>.<run>',
+#       que nunca e reescrita. 'latest', '<cups>-<os>', 'ubuntu' e 'debian'
+#       continuam moveis e sempre pousam num digest que TAMBEM tem nome imutavel,
+#       porque todas as tags saem de um unico 'imagetools create'.
+#
+#   (c) PROCEDENCIA DE PATCH em cinco camadas independentes: o nome da tag, as
+#       annotations do indice, os labels do config, o changelog que ja viaja
+#       dentro da imagem, e o relatorio commitado em .github/builds/.
+#
+#   (d) KEEPALIVE: o job 'record' commita o relatorio da reconstrucao. Commit e
+#       atividade de repositorio; run de workflow NAO e. E o que impede o GitHub
+#       de desabilitar o agendamento apos 60 dias de inatividade. Nao existe
+#       commit vazio aqui de proposito: a action que fazia isso
+#       (gautamkrishnar/keepalive-workflow) foi banida por violacao de ToS.
+# =============================================================================
+
 on:
   push:
+    # 'branches' e obrigatorio. Sem ele, um push em QUALQUER branch que toque um
+    # Dockerfile publicava 'latest', e o Portainer puxa 'latest'.
+    branches:
+      - master
     paths:
       - 'Dockerfile.*'
+      - 'docker-entrypoint.sh'
       - '.github/workflows/**'
   workflow_dispatch:
   schedule:
-    - cron: '0 3 * * 0' # Todo domingo às 03:00 UTC
+    - cron: '0 3 * * 0' # Todo domingo as 03:00 UTC
 
 permissions:
   contents: read
 
 concurrency:
-  group: cups-build
+  # Por ref, e nao global: um dispatch de teste nao segura mais o ciclo semanal.
+  group: cups-build-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -21,132 +54,177 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # 1) PREPARE: descobre a versao do CUPS e decide se cada variante (ubuntu/debian)
-  #    precisa buildar. Roda 1x em amd64 -- a versao do pacote e' identica nas
-  #    arquiteturas. Emite MATRIZES ja filtradas (so as combinacoes necessarias)
-  #    para os jobs build e merge -- assim o gate usa so `needs` (o `matrix` NAO
-  #    pode ser referenciado num `if:` de nivel de job).
+  # 1) PREPARE: resolve a base por DIGEST (uma vez, para os dois runners),
+  #    descobre a versao do CUPS no archive vivo, traduz o digest da base para a
+  #    tag datada oficial legivel, e monta o nome da tag imutavel deste build.
+  #    NAO decide mais se constroi: o portao de publicacao esta no job merge,
+  #    depois do diff real de pacotes.
   # ---------------------------------------------------------------------------
   prepare:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     outputs:
-      any_needed:   ${{ steps.plan.outputs.any_needed }}
+      created:      ${{ steps.plan.outputs.created }}
       build_matrix: ${{ steps.plan.outputs.build_matrix }}
       merge_matrix: ${{ steps.plan.outputs.merge_matrix }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          # fetch-depth: 0, nao 2. Com clone raso, um push de mais de 2 commits
+          # faz o 'git diff' abaixo falhar em silencio e a deteccao de Dockerfile
+          # alterado vira codigo morto.
+          fetch-depth: 0
 
-      # Login cedo: autentica os `docker run` de deteccao de versao (evita o
-      # rate-limit anonimo do Docker Hub, que pode dar 429 em runner movimentado).
+      - name: Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Login cedo: autentica o imagetools inspect e o docker run de deteccao,
+      # evitando o rate-limit anonimo do Docker Hub.
       - name: Login no Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Montar matrizes (versao + build necessario) por variante
+      - name: Planejar (base por digest, versao, tag imutavel)
         id: plan
         env:
-          REPO: ${{ env.IMAGE_NAME }}
-          EVENT_NAME: ${{ github.event_name }}
-          BEFORE_SHA: ${{ github.event.before }}
+          EVENT_NAME:  ${{ github.event_name }}
+          BEFORE_SHA:  ${{ github.event.before }}
           CURRENT_SHA: ${{ github.sha }}
+          RUN_NUMBER:  ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          # Consulta com retry exponencial; so aceita 200 ou 404 como respostas validas.
-          check_tag() {
-            local url="$1" status="000"
-            for attempt in 1 2 3 4; do
-              status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "$url" 2>/dev/null)
-              [ -z "$status" ] && status="000"
-              if [ "$status" = "200" ] || [ "$status" = "404" ]; then echo "$status"; return 0; fi
-              echo "Tentativa $attempt em $url falhou (status: $status). Aguardando $((attempt*5))s..." >&2
-              sleep $((attempt*5))
+          set -uo pipefail
+
+          # Um unico carimbo para as duas variantes e as duas arquiteturas,
+          # senao cada runner grava um 'created' diferente no config da imagem.
+          CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          STAMP=$(date -u +%Y%m%d)
+
+          # Sufixo da tag imutavel: run_number e monotonico e unico no repo, e
+          # resolve de graca a colisao de dois builds no mesmo dia UTC. O 'rN'
+          # so aparece num re-run, para nao sobrescrever a tag ja publicada.
+          SUFFIX="${RUN_NUMBER}"
+          [ "${RUN_ATTEMPT:-1}" != "1" ] && SUFFIX="${RUN_NUMBER}r${RUN_ATTEMPT}"
+
+          # Traduz o digest resolvido para a tag DATADA oficial da base
+          # (ubuntu:resolute-20260811.1 em vez de ubuntu:rolling), que e o nome
+          # legivel que vai para o label e para a annotation. Se falhar, degrada
+          # com aviso alto: o digest ao lado continua provando tudo.
+          resolve_dated() {
+            local repo="$1" filtro="$2" re="$3" digest="$4"
+            local url="https://hub.docker.com/v2/repositories/library/${repo}/tags?page_size=100&ordering=last_updated&name=${filtro}"
+            local body dated="" i=0
+            while [ -n "$url" ] && [ "$url" != "null" ] && [ "$i" -lt 5 ]; do
+              i=$((i + 1))
+              body=$(curl -fsS --max-time 30 "$url") || break
+              dated=$(printf '%s' "$body" | jq -r --arg d "$digest" --arg re "$re" \
+                '[.results[] | select(.digest == $d) | select(.name | test($re)) | .name][0] // empty')
+              [ -n "$dated" ] && break
+              url=$(printf '%s' "$body" | jq -r '.next // ""')
             done
-            echo "$status"; return 1
+            printf '%s' "$dated"
           }
 
-          declare -A BASE=( [ubuntu]="ubuntu:rolling" [debian]="debian:trixie-slim" )
-          declare -A DF=(   [ubuntu]="Dockerfile.ubuntu" [debian]="Dockerfile.debian" )
-          declare -A RUNNER=( [amd64]="ubuntu-latest" [arm64]="ubuntu-24.04-arm" )
+          declare -A BASE=(     [ubuntu]="ubuntu:rolling"    [debian]="debian:trixie-slim" )
+          declare -A BASEREPO=( [ubuntu]="ubuntu"            [debian]="debian" )
+          declare -A DF=(       [ubuntu]="Dockerfile.ubuntu" [debian]="Dockerfile.debian" )
+          declare -A DATEDRE=(  [ubuntu]='^[a-z]+-[0-9]{8}(\.[0-9]+)?$' \
+                                [debian]='^[a-z]+-[0-9]{8}(\.[0-9]+)?-slim$' )
+          declare -A RUNNER=(   [amd64]="ubuntu-latest"      [arm64]="ubuntu-24.04-arm" )
 
-          BUILD='[]'   # combinacoes os x arch a buildar
-          MERGE='[]'   # variantes a publicar (com a versao)
-          ANY=false
+          BUILD='[]'; MERGE='[]'
 
           for OS in ubuntu debian; do
-            BASE_IMAGE="${BASE[$OS]}"; DOCKERFILE="${DF[$OS]}"
+            BASE_IMAGE="${BASE[$OS]}"; DOCKERFILE="${DF[$OS]}"; BREPO="${BASEREPO[$OS]}"
 
-            # Descobre a versao real do CUPS direto na base (mesma em amd64/arm64)
-            VER=$(docker run --rm "$BASE_IMAGE" sh -c "apt-get update -qq >/dev/null && apt-cache show cups | grep -m1 '^Version:' | awk '{print \$2}' | sed 's/^[0-9]://' | cut -d'-' -f1")
-            if [ -z "$VER" ]; then echo "::error::Nao consegui detectar a versao do CUPS em $BASE_IMAGE"; exit 1; fi
-            TAG="${VER}-${OS}"
-            echo "[$OS] versao=$VER tag=$TAG"
+            # Digest do INDICE da base agora. Sem pull, so metadados.
+            BASE_DIGEST=$(docker buildx imagetools inspect "$BASE_IMAGE" \
+                            --format '{{json .Manifest}}' | jq -r '.digest')
+            if [ -z "$BASE_DIGEST" ] || [ "$BASE_DIGEST" = "null" ]; then
+              echo "::error::Nao consegui resolver o digest de $BASE_IMAGE"; exit 1
+            fi
+            BASE_REF="${BASE_IMAGE}@${BASE_DIGEST}"
 
-            NEEDED=false; REASON=""
-
-            # Dispatch manual sempre builda
-            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then NEEDED=true; REASON="workflow_dispatch"; fi
-
-            # Forca build se o Dockerfile desta variante mudou neste push
-            if [ "$NEEDED" != "true" ] && [ "$EVENT_NAME" = "push" ] && [ -n "${BEFORE_SHA:-}" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
-              CHANGED=$(git diff --name-only "$BEFORE_SHA" "$CURRENT_SHA" 2>/dev/null || echo "")
-              if echo "$CHANGED" | grep -qx "$DOCKERFILE"; then NEEDED=true; REASON="$DOCKERFILE modificado"; fi
+            # Versao do CUPS e codename lidos da base EXATA que sera construida,
+            # nao da tag movel: sem isso existe uma janela em que o que foi
+            # medido nao e o que sera construido.
+            INFO=$(docker run --rm "$BASE_REF" sh -c 'set -e
+              . /etc/os-release
+              apt-get update -qq >/dev/null 2>&1
+              V=$(apt-cache show cups | sed -n "s/^Version: //p" | head -1 | sed "s/^[0-9]*://" | cut -d- -f1)
+              printf "%s|%s\n" "$V" "$VERSION_CODENAME"')
+            VER="${INFO%%|*}"; CODENAME="${INFO##*|}"
+            if [ -z "$VER" ] || [ -z "$CODENAME" ]; then
+              echo "::error::Nao detectei versao/codename em $BASE_REF"; exit 1
             fi
 
-            if [ "$NEEDED" != "true" ]; then
-              # Ponto 1: tag versionada existe?
-              VS=$(check_tag "https://hub.docker.com/v2/repositories/${REPO}/tags/${TAG}") || { echo "::error::Falha ao consultar tag '$TAG'."; exit 1; }
-              if [ "$VS" = "404" ]; then NEEDED=true; REASON="tag '$TAG' ausente"; fi
+            DATED=$(resolve_dated "$BREPO" "${CODENAME}-" "${DATEDRE[$OS]}" "$BASE_DIGEST")
+            if [ -n "$DATED" ]; then
+              BASE_NAME="docker.io/library/${BREPO}:${DATED}"
+            else
+              echo "::warning::Nenhuma tag datada aponta para $BASE_DIGEST em library/$BREPO"
+              BASE_NAME="docker.io/library/${BASE_IMAGE}"
+            fi
 
-              # Ponto 2: 'latest' (so ubuntu) deve apontar pro MESMO digest do <v>-ubuntu
-              if [ "$OS" = "ubuntu" ] && [ "$NEEDED" != "true" ]; then
-                LS=$(check_tag "https://hub.docker.com/v2/repositories/${REPO}/tags/latest") || { echo "::error::Falha ao consultar 'latest'."; exit 1; }
-                if [ "$LS" = "404" ]; then
-                  NEEDED=true; REASON="'latest' ausente"
-                elif [ "$VS" = "200" ]; then
-                  VD=$(curl -fsS --max-time 30 "https://hub.docker.com/v2/repositories/${REPO}/tags/${TAG}" 2>/dev/null | jq -r '.digest // ""')
-                  LD=$(curl -fsS --max-time 30 "https://hub.docker.com/v2/repositories/${REPO}/tags/latest" 2>/dev/null | jq -r '.digest // ""')
-                  if [ -z "$VD" ] || [ -z "$LD" ]; then NEEDED=true; REASON="nao consegui ler digests"; elif [ "$VD" != "$LD" ]; then NEEDED=true; REASON="'latest' dessincronizado de '$TAG'"; fi
-                fi
+            TAG="${VER}-${OS}-${STAMP}.${SUFFIX}"
+
+            # Publicacao forcada: dispatch manual, ou mudanca no que a gente
+            # controla. Nos dois casos a imagem muda mesmo sem mudar pacote.
+            FORCE=false; FREASON=""
+            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              FORCE=true; FREASON="workflow_dispatch"
+            elif [ "$EVENT_NAME" = "push" ] && [ -n "${BEFORE_SHA:-}" ] \
+                 && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+              CHANGED=$(git diff --name-only "$BEFORE_SHA" "$CURRENT_SHA" 2>/dev/null || echo "")
+              # -F obrigatorio: sem ele o '.' de 'Dockerfile.ubuntu' e curinga em
+              # BRE e a linha casaria tambem a outra variante.
+              if grep -qxF -e "$DOCKERFILE" -e "docker-entrypoint.sh" <<<"$CHANGED"; then
+                FORCE=true; FREASON="$DOCKERFILE ou docker-entrypoint.sh modificado"
               fi
             fi
 
-            echo "[$OS] needed=$NEEDED ${REASON:+($REASON)}"
+            echo "[$OS] cups=$VER base=$BASE_NAME digest=${BASE_DIGEST:7:19} tag=$TAG force=$FORCE"
 
-            if [ "$NEEDED" = "true" ]; then
-              ANY=true
-              for ARCH in amd64 arm64; do
-                BUILD=$(echo "$BUILD" | jq -c \
-                  --arg os "$OS" --arg df "$DOCKERFILE" --arg arch "$ARCH" --arg runner "${RUNNER[$ARCH]}" \
-                  '. + [{os:$os, dockerfile:$df, arch:$arch, runner:$runner}]')
-              done
-              MERGE=$(echo "$MERGE" | jq -c --arg os "$OS" --arg v "$VER" '. + [{os:$os, version:$v}]')
-            fi
+            for ARCH in amd64 arm64; do
+              BUILD=$(jq -cn --argjson acc "$BUILD" \
+                --arg os "$OS" --arg df "$DOCKERFILE" --arg arch "$ARCH" \
+                --arg runner "${RUNNER[$ARCH]}" --arg ver "$VER" --arg tag "$TAG" \
+                --arg br "$BASE_REF" --arg bn "$BASE_NAME" --arg bd "$BASE_DIGEST" \
+                '$acc + [{os:$os, dockerfile:$df, arch:$arch, runner:$runner,
+                          version:$ver, tag:$tag, base_ref:$br, base_name:$bn, base_digest:$bd}]')
+            done
+
+            MERGE=$(jq -cn --argjson acc "$MERGE" \
+              --arg os "$OS" --arg ver "$VER" --arg tag "$TAG" --arg cn "$CODENAME" \
+              --arg bn "$BASE_NAME" --arg bd "$BASE_DIGEST" \
+              --arg force "$FORCE" --arg freason "$FREASON" \
+              '$acc + [{os:$os, version:$ver, tag:$tag, codename:$cn,
+                        base_name:$bn, base_digest:$bd, force:$force, force_reason:$freason}]')
           done
 
-          echo "any_needed=$ANY" >> "$GITHUB_OUTPUT"
-          echo "build_matrix={\"include\":$BUILD}" >> "$GITHUB_OUTPUT"
-          echo "merge_matrix={\"include\":$MERGE}" >> "$GITHUB_OUTPUT"
-          echo "any_needed=$ANY"
-          echo "build_matrix={\"include\":$BUILD}"
-          echo "merge_matrix={\"include\":$MERGE}"
+          {
+            echo "created=$CREATED"
+            echo "build_matrix={\"include\":$BUILD}"
+            echo "merge_matrix={\"include\":$MERGE}"
+          } >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------------
-  # 2) BUILD: cada (variante x arquitetura) NECESSARIA no seu runner NATIVO ->
-  #    sem QEMU. Push POR DIGEST (sem tag); o merge junta os digests num manifesto.
-  #    A matriz ja vem filtrada do prepare; o gate usa so `needs` (permitido).
+  # 2) BUILD: cada (variante x arquitetura) no seu runner NATIVO, sem QEMU.
+  #    Push POR DIGEST; o merge junta os digests num manifesto multi-arch.
   # ---------------------------------------------------------------------------
   build:
     needs: prepare
-    if: needs.prepare.outputs.any_needed == 'true'
+    # Segunda barreira, alem do filtro de branch: um workflow_dispatch apontado
+    # para outra ref roda o prepare como ensaio e nunca publica.
+    if: github.ref == 'refs/heads/master'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60   # teto de seguranca: nenhum build (nativo, apt) deve chegar perto disso
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -160,43 +238,83 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build & push por digest (${{ matrix.os }}/${{ matrix.arch }})
+      - name: Build e push por digest (${{ matrix.os }}/${{ matrix.arch }})
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./${{ matrix.dockerfile }}
           platforms: linux/${{ matrix.arch }}
-          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=${{ matrix.os }}-${{ matrix.arch }}
-          cache-to: type=gha,scope=${{ matrix.os }}-${{ matrix.arch }},mode=max
-          # Sem attestation de provenance -> manifesto multi-arch limpo (so amd64+arm64,
-          # sem entradas 'unknown/unknown' que o imagetools carregaria pro manifesto final).
+          build-args: |
+            BASE_REF=${{ matrix.base_ref }}
+          # Os labels SAO a procedencia offline. Vivem no blob de config, que o
+          # imagetools create copia por digest sem tocar, entao sobrevivem ao
+          # push-by-digest e ao merge. O workflow anterior NAO tinha este input:
+          # sem ele a proxima imagem publicada sairia sem procedencia nenhuma.
+          labels: |
+            org.opencontainers.image.title=cups
+            org.opencontainers.image.description=CUPS ${{ matrix.version }} sobre ${{ matrix.base_name }}
+            org.opencontainers.image.version=${{ matrix.tag }}
+            org.opencontainers.image.created=${{ needs.prepare.outputs.created }}
+            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.base.name=${{ matrix.base_name }}
+            org.opencontainers.image.base.digest=${{ matrix.base_digest }}
+            io.github.cateim.cups.variant=${{ matrix.os }}
+            io.github.cateim.cups.build.run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # Nivel 'manifest' (o default), NUNCA 'index': um build push-by-digest
+          # nao produz indice, e annotation de indice aqui faz o build falhar.
+          annotations: |
+            manifest:org.opencontainers.image.version=${{ matrix.tag }}
+            manifest:org.opencontainers.image.created=${{ needs.prepare.outputs.created }}
+            manifest:org.opencontainers.image.revision=${{ github.sha }}
+            manifest:org.opencontainers.image.base.name=${{ matrix.base_name }}
+            manifest:org.opencontainers.image.base.digest=${{ matrix.base_digest }}
+          # oci-mediatypes=true e OBRIGATORIO. Com provenance:false e media types
+          # Docker, o imagetools create do merge descarta TODAS as annotations do
+          # indice em silencio, sem erro e sem aviso (docker/buildx#3061).
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true,oci-mediatypes=true
+          # Sem cache, de proposito: os Dockerfiles rodam 'apt-get upgrade' contra
+          # o archive VIVO. Com cache, o digest da base inalterado devolveria as
+          # camadas velhas, o apt nao rodaria e o diff sairia vazio para sempre.
+          no-cache: true
+          # Sem attestation de provenance: mantem o manifesto multi-arch limpo,
+          # sem as entradas 'unknown/unknown' que o imagetools carregaria para o
+          # manifesto final. A procedencia vem dos labels e annotations acima.
           provenance: false
 
       - name: Exportar digest
         run: |
+          set -euo pipefail
           mkdir -p /tmp/digests
-          echo "${{ steps.build.outputs.digest }}" > "/tmp/digests/${{ matrix.arch }}.txt"
+          D="${{ steps.build.outputs.digest }}"
+          [ -n "$D" ] || { echo "::error::build nao devolveu digest"; exit 1; }
+          echo "$D" > "/tmp/digests/${{ matrix.arch }}.txt"
 
       - name: Subir digest como artefato
         uses: actions/upload-artifact@v4
         with:
           name: digests-${{ matrix.os }}-${{ matrix.arch }}
           path: /tmp/digests/*.txt
-          retention-days: 1
+          # 5 dias, nao 1: com 1 dia um re-run do merge no dia seguinte encontra
+          # o artefato expirado e falha sem motivo aparente.
+          retention-days: 5
+          if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # 3) MERGE: junta os digests amd64+arm64 de cada variante num unico manifesto
-  #    multi-arch e aplica as tags (latest so no ubuntu).
+  # 3) MERGE: calcula o diff de pacotes, decide se publica, cria o manifesto
+  #    multi-arch com as annotations de procedencia e publica as tags.
   # ---------------------------------------------------------------------------
   merge:
     needs: [prepare, build]
-    if: needs.prepare.outputs.any_needed == 'true'
+    if: github.ref == 'refs/heads/master'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.merge_matrix) }}
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Baixar digests da variante
         uses: actions/download-artifact@v4
@@ -214,82 +332,583 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Gerar tags
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest,enable=${{ matrix.os == 'ubuntu' }}
-            type=raw,value=${{ matrix.version }}-${{ matrix.os }}
-
-      - name: Criar manifesto multi-arch e publicar as tags
+      - name: Conferir que as duas arquiteturas chegaram
         run: |
           set -euo pipefail
-          REFS=""
-          for f in /tmp/digests/*.txt; do
-            D=$(cat "$f")
-            REFS="$REFS ${IMAGE_NAME}@${D}"
-          done
-          TAGFLAGS=$(jq -r '.tags[] | "-t " + .' <<< "$DOCKER_METADATA_OUTPUT_JSON")
-          echo "Criando manifesto para: $(jq -rc '.tags' <<< "$DOCKER_METADATA_OUTPUT_JSON")"
-          docker buildx imagetools create $TAGFLAGS $REFS
-          for t in $(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON"); do
-            echo "== $t =="
-            docker buildx imagetools inspect "$t" | grep -E 'Name|Platform' || true
+          # Sem esta guarda, a falha de um dos dois builds (fail-fast: false)
+          # publicaria um manifesto de arquitetura unica sob a mesma tag, e o
+          # servidor ARM do dono passaria a nao encontrar imagem.
+          for A in amd64 arm64; do
+            [ -s "/tmp/digests/${A}.txt" ] || { echo "::error::falta o digest de ${A}"; exit 1; }
           done
 
-  # ---------------------------------------------------------------------------
-  # 4) CLEANUP: remove tags antigas do Docker Hub (identico ao seu original).
-  # ---------------------------------------------------------------------------
-  cleanup:
-    needs: merge
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Remove tags antigas do Docker Hub
+      - name: Diff de pacotes contra a imagem publicada
+        id: diff
         env:
-          REPO: ${{ env.IMAGE_NAME }}
-          DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
-          DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          IMAGE:       ${{ env.IMAGE_NAME }}
+          OS_VARIANT:  ${{ matrix.os }}
+          VER:         ${{ matrix.version }}
+          TAG:         ${{ matrix.tag }}
+          BASE_NAME:   ${{ matrix.base_name }}
+          BASE_DIGEST: ${{ matrix.base_digest }}
+          FORCE:       ${{ matrix.force }}
+          FREASON:     ${{ matrix.force_reason }}
         run: |
-          # Obtém JWT do Docker Hub (PAT funciona como senha aqui)
-          JWT=$(curl -fsS -H "Content-Type: application/json" \
-            -X POST -d "{\"username\":\"${DH_USER}\",\"password\":\"${DH_TOKEN}\"}" \
-            https://hub.docker.com/v2/users/login/ | jq -r .token)
+          # O runner entrega este bloco como 'bash -e {0}', entao o errexit ja
+          # chega LIGADO e 'set -uo pipefail' NAO o desliga, so acrescenta
+          # nounset e pipefail. Aqui os dois precisam sair de cena:
+          #  - o script usa 'docker cp' que falha de proposito, para detectar
+          #    arquivo ausente, e trata cada retorno na mao;
+          #  - a leitura de changelog termina em 'head -120 | sed /q', onde o
+          #    sed sai ao casar a versao e mata o head, e o head sai e mata o
+          #    gzip. Com pipefail isso devolve 141 e o errexit aborta o passo
+          #    inteiro sem imprimir mensagem nenhuma.
+          # Todo caminho critico abaixo ja tem guarda explicita ('if ! inventario',
+          # '|| return 1'), entao desligar aqui nao esconde falha real.
+          set +e
+          set +o pipefail
+          set -u
+          TAB=$(printf '\t')
+          W=$(mktemp -d); CIDS=""
+          trap '[ -n "$CIDS" ] && docker rm -f $CIDS >/dev/null 2>&1; rm -rf "$W"' EXIT
 
-          if [ -z "$JWT" ] || [ "$JWT" = "null" ]; then
-            echo "::error::Falha ao autenticar no Docker Hub para limpeza."
-            exit 1
+          NEW_AMD64="${IMAGE}@$(cat /tmp/digests/amd64.txt)"
+          NEW_ARM64="${IMAGE}@$(cat /tmp/digests/arm64.txt)"
+          OUT="/tmp/report-${OS_VARIANT}.md"
+          : > "$OUT"
+
+          # Inventario de uma imagem, lido do banco do dpkg, que TODA imagem
+          # Debian/Ubuntu ja tem. Por isso funciona ate na imagem publicada em
+          # maio, que nao tem manifesto nenhum assado dentro.
+          # Nada da imagem e EXECUTADO: docker create so cria a camada rw e o
+          # config, e docker cp le o filesystem pelo daemon. Consequencias boas:
+          # nao roda binario de imagem publicada dentro do runner que carrega o
+          # token do Docker Hub, e funciona cross-arch sem QEMU.
+          # Saida: pacote / versao / pacote-fonte / versao-fonte, ordenada em C.
+          inventario() {
+            local ref="$1" out="$2" arch="${3:-amd64}" cid=""
+            docker pull -q --platform "linux/${arch}" "$ref" >/dev/null 2>&1 || {
+              echo "   nao consegui baixar $ref" >&2; return 1; }
+            cid=$(docker create --platform "linux/${arch}" "$ref" 2>/dev/null) || return 1
+            CIDS="$CIDS $cid"
+            docker cp -L "$cid:/var/lib/dpkg/status" "$W/status" >/dev/null 2>&1 || return 1
+            awk 'BEGIN{RS="";FS="\n"}
+              { p=""; v=""; src=""; ok=0
+                for (i=1;i<=NF;i++) {
+                  if      ($i ~ /^Package: /)                p=substr($i,10)
+                  else if ($i ~ /^Version: /)                v=substr($i,10)
+                  else if ($i ~ /^Source: /)                 src=substr($i,9)
+                  else if ($i ~ /^Status: .* ok installed$/) ok=1
+                }
+                if (!ok || p=="" || v=="") next
+                sv=v
+                if (src=="") src=p
+                else if (index(src,"(")>0) {
+                  j=index(src,"("); sv=substr(src,j+1); sub(/\)$/,"",sv)
+                  src=substr(src,1,j-1); sub(/[ \t]+$/,"",src)
+                }
+                print p "\t" v "\t" src "\t" sv }' "$W/status" \
+              | LC_ALL=C sort -t"$TAB" -k1,1 > "$out"
+            [ -s "$out" ]
+          }
+
+          if ! inventario "$NEW_AMD64" "$W/new.tsv"; then
+            echo "::error::Nao consegui ler o inventario da imagem recem-construida"; exit 1
+          fi
+          TOTAL=$(wc -l < "$W/new.tsv" | tr -d ' ')
+
+          # Guarda de consistencia entre arquiteturas: o relatorio e feito em
+          # amd64 e vale para arm64 por premissa. Aqui a premissa e conferida.
+          ARCH_WARN=""
+          if inventario "$NEW_ARM64" "$W/new-arm64.tsv" arm64; then
+            join -t"$TAB" -j1 -o 0,1.2,2.2 \
+              <(cut -f1,2 "$W/new.tsv") <(cut -f1,2 "$W/new-arm64.tsv") \
+              | awk -F"$TAB" '$2!=$3' > "$W/arch-diff"
+            if [ -s "$W/arch-diff" ]; then
+              ARCH_WARN="$(wc -l < "$W/arch-diff" | tr -d ' ')"
+              echo "::warning::amd64 e arm64 divergem em ${ARCH_WARN} pacote(s)"
+            fi
           fi
 
-          PAGE=1
-          REMOVED=0
-          while :; do
-            RESPONSE=$(curl -fsS "https://hub.docker.com/v2/repositories/${REPO}/tags?page_size=100&page=${PAGE}")
-            TAGS=$(echo "$RESPONSE" | jq -r '.results[]?.name')
-            [ -z "$TAGS" ] && break
-
-            while IFS= read -r TAG; do
-              # Padrões antigos: 'ubuntu' / 'debian' puros, versão sem sufixo (ex: 2.4.12), e sha-*
-              if [[ "$TAG" =~ ^(ubuntu|debian)$ ]] \
-                 || [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
-                 || [[ "$TAG" =~ ^sha- ]]; then
-                STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-                  -X DELETE -H "Authorization: JWT $JWT" \
-                  "https://hub.docker.com/v2/repositories/${REPO}/tags/${TAG}/")
-                if [ "$STATUS" = "204" ]; then
-                  echo "Removida tag antiga: $TAG"
-                  REMOVED=$((REMOVED + 1))
-                else
-                  echo "Falha ao remover '$TAG' (status: $STATUS)"
-                fi
-              fi
-            done <<< "$TAGS"
-
-            NEXT=$(echo "$RESPONSE" | jq -r '.next')
-            [ "$NEXT" = "null" ] && break
-            PAGE=$((PAGE + 1))
+          # Imagem anterior: primeiro a tag da serie (o caso do dono, CUPS parado
+          # em 2.4.16), depois a movel da variante, depois latest.
+          CANDS="${IMAGE}:${VER}-${OS_VARIANT} ${IMAGE}:${OS_VARIANT}"
+          [ "$OS_VARIANT" = "ubuntu" ] && CANDS="$CANDS ${IMAGE}:latest"
+          OLD_REF=""
+          for C in $CANDS; do
+            if inventario "$C" "$W/old.tsv"; then OLD_REF="$C"; break; fi
           done
 
-          echo "Limpeza concluída. Tags removidas: $REMOVED"
+          OLD_BASE=""
+          if [ -n "$OLD_REF" ]; then
+            OLD_BASE=$(docker inspect "$OLD_REF" \
+              --format '{{index .Config.Labels "org.opencontainers.image.base.digest"}}' 2>/dev/null || true)
+            [ "$OLD_BASE" = "<no value>" ] && OLD_BASE=""
+          fi
+
+          {
+            printf '## %s - CUPS %s\n\n' "$OS_VARIANT" "$VER"
+            printf '| campo | valor |\n|---|---|\n'
+            printf '| tag imutavel | `%s` |\n' "$TAG"
+            printf '| base | `%s` |\n' "$BASE_NAME"
+            printf '| base digest | `%s` |\n' "$BASE_DIGEST"
+            printf '| base anterior | `%s` |\n' "${OLD_BASE:-nao registrada}"
+            printf '| imagem nova (amd64) | `%s` |\n' "$NEW_AMD64"
+            printf '| comparada com | `%s` |\n' "${OLD_REF:-nenhuma}"
+            printf '\n'
+          } >> "$OUT"
+
+          N_CHG=0; N_ADD=0; N_REM=0; CVES=""
+          if [ -z "$OLD_REF" ]; then
+            printf 'Primeira publicacao desta variante. Inventario inicial: **%s pacotes**.\n\n' "$TOTAL" >> "$OUT"
+          else
+            join -t"$TAB" -j1 -o 0,1.2,2.2,2.3,1.4 "$W/old.tsv" "$W/new.tsv" \
+              | awk -F"$TAB" '$2!=$3' > "$W/chg"
+            join -t"$TAB" -j1 -v2 -o 0,2.2 "$W/old.tsv" "$W/new.tsv" > "$W/add"
+            join -t"$TAB" -j1 -v1 -o 0,1.2 "$W/old.tsv" "$W/new.tsv" > "$W/rem"
+            N_CHG=$(wc -l < "$W/chg" | tr -d ' ')
+            N_ADD=$(wc -l < "$W/add" | tr -d ' ')
+            N_REM=$(wc -l < "$W/rem" | tr -d ' ')
+
+            printf '**%s atualizado(s), %s novo(s), %s removido(s)** de %s pacotes.\n\n' \
+              "$N_CHG" "$N_ADD" "$N_REM" "$TOTAL" >> "$OUT"
+
+            if [ "$N_CHG" -gt 0 ] || [ "$N_ADD" -gt 0 ] || [ "$N_REM" -gt 0 ]; then
+              {
+                printf '```\n'
+                awk -F"$TAB" '{printf "%s: %s -> %s\n",        $1, $2, $3}' "$W/chg"
+                awk -F"$TAB" '{printf "%s: (ausente) -> %s\n", $1, $2}'     "$W/add"
+                awk -F"$TAB" '{printf "%s: %s -> (ausente)\n", $1, $2}'     "$W/rem"
+                printf '```\n\n'
+              } >> "$OUT"
+            else
+              printf 'Nenhuma diferenca de pacotes.\n\n' >> "$OUT"
+            fi
+
+            # O QUE mudou: o changelog de cada pacote atualizado, lido DENTRO da
+            # imagem nova. No ubuntu ele ja vem de graca (a base tem path-include
+            # explicito para changelog). Deduplicado por pacote-FONTE, porque
+            # libssl3t64 e openssl compartilham o mesmo changelog.
+            if [ "$N_CHG" -gt 0 ]; then
+              awk -F"$TAB" '!seen[$4]++ {print $1 "|" $5 "|" $4}' "$W/chg" > "$W/cl.list"
+              NEW_CID=$(docker create --platform linux/amd64 "$NEW_AMD64" 2>/dev/null || true)
+              [ -n "$NEW_CID" ] && CIDS="$CIDS $NEW_CID"
+              : > "$W/cl.txt"
+              if [ -n "$NEW_CID" ]; then
+                # IFS='|' e nao IFS=tab: tab e espaco em branco para o IFS do
+                # bash e colapsa campos vazios, deslocando as colunas.
+                while IFS='|' read -r PKG OLDSRCV SRC; do
+                  [ -n "$PKG" ] || continue
+                  GOT=""
+                  for CAND in changelog.Debian.gz changelog.gz; do
+                    if docker cp -L "$NEW_CID:/usr/share/doc/${PKG}/${CAND}" "$W/cl.gz" >/dev/null 2>&1; then
+                      GOT=1; break
+                    fi
+                  done
+                  [ -n "$GOT" ] || continue
+                  {
+                    printf '===== %s (fonte: %s) =====\n' "$PKG" "$SRC"
+                    # '|| true' explicito: head e sed saem cedo de proposito e
+                    # matam quem escreve antes deles com SIGPIPE. Assim o trecho
+                    # continua correto mesmo se alguem religar o pipefail acima.
+                    { gzip -dc "$W/cl.gz" 2>/dev/null | head -120 | sed "/(${OLDSRCV})/q"; } || true
+                    printf '\n'
+                  } >> "$W/cl.txt"
+                done < "$W/cl.list"
+              fi
+
+              if [ -s "$W/cl.txt" ]; then
+                {
+                  printf '### Qual patch foi aplicado\n\n```\n'
+                  cat "$W/cl.txt"
+                  printf '```\n\n'
+                } >> "$OUT"
+                # Atribuicao de CVE barata e sem dependencia nova: o proprio
+                # texto do changelog. E indicativa, nao artefato de conformidade.
+                # '|| true': grep sem nenhum acerto devolve 1, e changelog que
+                # nao cita CVE e o caso COMUM, nao o excepcional.
+                CVES=$(grep -ohE 'CVE-[0-9]{4}-[0-9]{4,7}' "$W/cl.txt" | sort -u | paste -sd, - || true)
+                [ -n "$CVES" ] && printf 'CVEs citadas: `%s`\n\n' "$CVES" >> "$OUT"
+              else
+                printf '> Changelogs nao disponiveis nesta imagem. A base `debian:*-slim`\n' >> "$OUT"
+                printf '> descarta `/usr/share/doc/*`; confira o `zz-keep-changelogs`.\n\n' >> "$OUT"
+              fi
+            fi
+          fi
+
+          [ -n "$ARCH_WARN" ] && \
+            printf '> Aviso: amd64 e arm64 divergem em %s pacote(s) nesta reconstrucao.\n\n' "$ARCH_WARN" >> "$OUT"
+
+          # PORTAO DE PUBLICACAO. Publicar so quando ha razao. Toda duvida
+          # resolve para publicar: silencio nunca pode significar "esta em dia".
+          PUBLISH=false; MOTIVO=""
+          if   [ "$FORCE" = "true" ];  then PUBLISH=true; MOTIVO="$FREASON"
+          elif [ -z "$OLD_REF" ];      then PUBLISH=true; MOTIVO="primeira publicacao desta variante"
+          elif [ "$N_CHG" -gt 0 ] || [ "$N_ADD" -gt 0 ] || [ "$N_REM" -gt 0 ]; then
+            PUBLISH=true; MOTIVO="${N_CHG} atualizado(s), ${N_ADD} novo(s), ${N_REM} removido(s)"
+          elif [ -z "$OLD_BASE" ];     then PUBLISH=true; MOTIVO="imagem publicada nao registra a base"
+          else MOTIVO="nenhuma mudanca de pacote"
+          fi
+
+          printf 'Decisao: **%s** (%s).\n' \
+            "$([ "$PUBLISH" = "true" ] && echo PUBLICAR || echo 'nao publicar')" "$MOTIVO" >> "$OUT"
+
+          # Artefatos para o job record. Gerados SEMPRE, publique ou nao: e o
+          # status.json que permite ao record gravar "verifiquei e nada mudou"
+          # como conteudo real, em vez de recorrer a um commit vazio.
+          mkdir -p /tmp/record
+          cp "$OUT"       "/tmp/record/${TAG}.md"
+          cp "$W/new.tsv" "/tmp/record/${TAG}.tsv"
+          jq -n --arg os "$OS_VARIANT" --arg tag "$TAG" --arg ver "$VER" \
+                --arg bn "$BASE_NAME" --arg bd "$BASE_DIGEST" --arg ob "${OLD_BASE:-}" \
+                --arg pub "$PUBLISH" --arg motivo "$MOTIVO" --arg cves "$CVES" \
+                --argjson chg "$N_CHG" --argjson add "$N_ADD" --argjson rem "$N_REM" \
+                --argjson total "$TOTAL" \
+            '{variant:$os, tag:$tag, cups:$ver, base_name:$bn, base_digest:$bd,
+              base_previous:$ob, published:($pub=="true"), reason:$motivo, cves:$cves,
+              packages:{total:$total, changed:$chg, added:$add, removed:$rem}}' \
+            > "/tmp/record/status-${OS_VARIANT}.json"
+
+          {
+            echo "publish=$PUBLISH"
+            echo "reason=$MOTIVO"
+            echo "changed=$((N_CHG + N_ADD + N_REM))"
+            echo "cves=$CVES"
+            echo "old_base=$OLD_BASE"
+          } >> "$GITHUB_OUTPUT"
+
+          cat "$OUT" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Criar manifesto multi-arch e publicar as tags
+        if: steps.diff.outputs.publish == 'true'
+        env:
+          IMAGE:       ${{ env.IMAGE_NAME }}
+          OS_VARIANT:  ${{ matrix.os }}
+          VER:         ${{ matrix.version }}
+          TAG:         ${{ matrix.tag }}
+          BASE_NAME:   ${{ matrix.base_name }}
+          BASE_DIGEST: ${{ matrix.base_digest }}
+          OLD_BASE:    ${{ steps.diff.outputs.old_base }}
+          CHANGED:     ${{ steps.diff.outputs.changed }}
+          CVES:        ${{ steps.diff.outputs.cves }}
+          REASON:      ${{ steps.diff.outputs.reason }}
+          CREATED:     ${{ needs.prepare.outputs.created }}
+        run: |
+          set -euo pipefail
+          ARGS=()
+
+          # A imutavel primeiro: e ela que fica apontando para este indice para
+          # sempre. Depois as moveis. latest e alias exato de ubuntu. Todas saem
+          # de UMA chamada, entao nenhum ponteiro movel pousa, nem por um
+          # instante, num digest que ainda nao tem nome imutavel.
+          ARGS+=( -t "${IMAGE}:${TAG}" )
+          ARGS+=( -t "${IMAGE}:${VER}-${OS_VARIANT}" )
+          ARGS+=( -t "${IMAGE}:${OS_VARIANT}" )
+          [ "$OS_VARIANT" = "ubuntu" ] && ARGS+=( -t "${IMAGE}:latest" )
+
+          # Annotations de INDICE. So podem ser aplicadas aqui: o job build faz
+          # push por digest e nao produz indice nenhum, e o imagetools create
+          # descarta as annotations do indice de origem e monta um indice novo
+          # cujas annotations vem exclusivamente destas flags.
+          add() { ARGS+=( --annotation "index:$1" ); }
+          add "org.opencontainers.image.title=cups"
+          add "org.opencontainers.image.description=CUPS ${VER} sobre ${BASE_NAME}"
+          add "org.opencontainers.image.version=${TAG}"
+          add "org.opencontainers.image.created=${CREATED}"
+          add "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          add "org.opencontainers.image.revision=${GITHUB_SHA}"
+          add "org.opencontainers.image.licenses=MIT"
+          add "org.opencontainers.image.base.name=${BASE_NAME}"
+          add "org.opencontainers.image.base.digest=${BASE_DIGEST}"
+          add "io.github.cateim.cups.variant=${OS_VARIANT}"
+          add "io.github.cateim.cups.base.previous.digest=${OLD_BASE:-none}"
+          add "io.github.cateim.cups.packages.changed=${CHANGED}"
+          add "io.github.cateim.cups.build.reason=${REASON}"
+          add "io.github.cateim.cups.build.run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          add "io.github.cateim.cups.record=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/master/.github/builds/${TAG}.md"
+          # Truncada de proposito: o registro completo esta no git e no artefato.
+          [ -n "${CVES:-}" ] && add "io.github.cateim.cups.cves=$(printf '%s' "$CVES" | head -c 400)"
+
+          REFS=()
+          for F in /tmp/digests/*.txt; do REFS+=( "${IMAGE}@$(cat "$F")" ); done
+
+          docker buildx imagetools create "${ARGS[@]}" "${REFS[@]}"
+
+          # GUARDA 1: a annotation de procedencia chegou ao indice? Se o indice
+          # sair em midia Docker (por exemplo, se alguem remover o
+          # oci-mediatypes=true), o create descarta tudo em silencio, sem erro.
+          docker buildx imagetools inspect "${IMAGE}:${TAG}" --raw \
+            | jq -e '.annotations["org.opencontainers.image.base.digest"]' >/dev/null \
+            || { echo "::error::indice publicado SEM annotations de procedencia"; exit 1; }
+
+          # GUARDA 2: o label chegou ao config? Se alguem remover o bloco
+          # labels: do job build, o pipeline passaria a publicar imagem cega e o
+          # unico sintoma seria ruido que ninguem le.
+          docker buildx imagetools inspect "${IMAGE}:${TAG}" \
+            --format '{{json (index .Image "linux/amd64")}}' \
+            | jq -e '.config.Labels["org.opencontainers.image.base.digest"]' >/dev/null \
+            || { echo "::error::imagem publicada SEM label de procedencia"; exit 1; }
+
+          # GUARDA 3: o indice publicado tem as DUAS plataformas e nenhuma
+          # entrada unknown/unknown sobrando.
+          PLATS=$(docker buildx imagetools inspect "${IMAGE}:${TAG}" --raw \
+            | jq -r '[.manifests[].platform | "\(.os)/\(.architecture)"] | sort | join(" ")')
+          echo "plataformas: $PLATS"
+          [ "$PLATS" = "linux/amd64 linux/arm64" ] \
+            || { echo "::error::manifesto inesperado: $PLATS"; exit 1; }
+
+          echo "== annotations do indice =="
+          docker buildx imagetools inspect "${IMAGE}:${TAG}" --raw | jq '.annotations'
+
+      - name: Guardar o relatorio para o job record
+        uses: actions/upload-artifact@v4
+        with:
+          name: record-${{ matrix.os }}
+          path: /tmp/record/*
+          retention-days: 90
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 4) RECORD: grava o relatorio permanente em git e, de quebra, mantem o
+  #    agendamento vivo. Um unico commit por execucao, com as duas variantes.
+  #
+  #    NUNCA commita vazio. Quando nao houve publicacao, o que vai para o git e
+  #    o .github/builds/last-check.json, que registra um fato real e verificavel
+  #    ("em tal data a base era X, 334 pacotes, nada mudou"). Isso importa: o
+  #    GitHub baniu a action gautamkrishnar/keepalive-workflow justamente por
+  #    commit automatico cujo unico proposito era enganar o contador de 60 dias.
+  #
+  #    Nao reentra no workflow, por tres barreiras independentes: o filtro
+  #    on.push.paths nao cobre .github/builds/ nem BUILDS.md; evento gerado pelo
+  #    GITHUB_TOKEN nao cria run nova; e o [skip ci] na mensagem.
+  # ---------------------------------------------------------------------------
+  record:
+    needs: [prepare, merge]
+    if: always() && needs.prepare.result == 'success' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    concurrency:
+      group: cups-record
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Baixar relatorios das variantes
+        uses: actions/download-artifact@v4
+        with:
+          pattern: record-*
+          path: /tmp/record
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Commitar o registro (e manter o agendamento vivo)
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # Depois de quantos dias sem commit uma verificacao sem novidade passa
+          # a ser registrada mesmo assim. Bem abaixo dos 60 dias do GitHub.
+          HEARTBEAT_DAYS: '30'
+        run: |
+          set -euo pipefail
+          mkdir -p .github/builds
+          AGORA=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          PUBLICOU=0
+          if compgen -G "/tmp/record/status-*.json" >/dev/null; then
+            # Relatorio completo em git, mas so das variantes que publicaram:
+            # guardar o .md de uma reconstrucao descartada seria registrar uma
+            # imagem que nao existe sob nenhuma tag.
+            for S in /tmp/record/status-*.json; do
+              jq -e '.published' "$S" >/dev/null || continue
+              PUBLICOU=1
+              T=$(jq -r '.tag' "$S")
+              cp "/tmp/record/${T}.md"  ".github/builds/${T}.md"
+              cp "/tmp/record/${T}.tsv" ".github/builds/${T}.tsv"
+            done
+
+            if [ "$PUBLICOU" = "1" ]; then
+              NOVO=$(mktemp)
+              {
+                echo "## $(date -u +%Y-%m-%d) - reconstrucao"
+                echo
+                for S in /tmp/record/status-*.json; do
+                  jq -e '.published' "$S" >/dev/null || continue
+                  jq -r '"- `\(.tag)`: \(.packages.changed) pacote(s) atualizado(s)."
+                         + (if .cves != "" then " CVEs: \(.cves)." else "" end)
+                         + " [relatorio](.github/builds/\(.tag).md)"' "$S"
+                done
+                echo
+                [ -f BUILDS.md ] && cat BUILDS.md
+              } > "$NOVO"
+              mv "$NOVO" BUILDS.md
+            fi
+
+            # Registro da verificacao, publique ou nao. E o que mantem o
+            # agendamento vivo sem commit vazio.
+            jq -s --arg t "$AGORA" --arg r "$RUN_URL" \
+              '{checked_at:$t, run:$r, variants:.}' /tmp/record/status-*.json \
+              > .github/builds/last-check.json
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # BUILDS.md so passa a existir na primeira publicacao, e um unico
+          # caminho inexistente faz o 'git add -A' abortar SEM stagear nada, o
+          # que faria o job anunciar "nada a registrar" tendo o que registrar.
+          # Por isso os caminhos vao um a um, e so os que existem.
+          [ -d .github/builds ] && git add -A .github/builds
+          [ -e BUILDS.md ] && git add -A BUILDS.md
+          true
+
+          IDADE=$(( ( $(date +%s) - $(git log -1 --format=%ct) ) / 86400 ))
+          echo "Ultimo commit ha ${IDADE} dia(s). Publicou nesta run: ${PUBLICOU}."
+
+          if git diff --cached --quiet; then
+            echo "Nada a registrar. Sem commit."; exit 0
+          fi
+
+          # Sem publicacao e com atividade recente, o last-check.json fica para a
+          # proxima: 52 commits por ano de "nada mudou" so poluiriam o historico.
+          # Passando de HEARTBEAT_DAYS, ele e commitado, e a atividade real do
+          # repositorio zera o contador de inatividade do GitHub.
+          if [ "$PUBLICOU" = "0" ] && [ "$IDADE" -lt "$HEARTBEAT_DAYS" ]; then
+            echo "Sem publicacao e atividade recente (${IDADE}d < ${HEARTBEAT_DAYS}d). Sem commit."
+            git reset -q; exit 0
+          fi
+
+          if [ "$PUBLICOU" = "1" ]; then
+            git commit -m "chore(build): registra a reconstrucao [skip ci]" -m "Run: ${RUN_URL}"
+          else
+            git commit -m "chore(build): registra a verificacao semanal [skip ci]" \
+                       -m "Nenhuma mudanca de pacote. Run: ${RUN_URL}"
+          fi
+
+          for I in 1 2 3; do
+            git push origin HEAD:master && exit 0
+            echo "Push falhou (tentativa $I). Rebase e tento de novo."
+            git pull --rebase --autostash origin master
+          done
+          echo "::error::Nao consegui empurrar o registro apos 3 tentativas."; exit 1
+
+  # ---------------------------------------------------------------------------
+  # 5) CLEANUP: retencao das tags DATADAS. Lista de PERMISSAO, nunca de bloqueio:
+  #    um erro de regex vira "nao apaguei nada", jamais "apaguei o latest".
+  #    Contrato publicado: tag movel nunca some; tag imutavel vive no minimo
+  #    KEEP_DAYS dias e, em qualquer caso, as KEEP_MIN mais recentes de cada
+  #    variante e a mais recente de cada serie do CUPS ficam para sempre.
+  #
+  #    A regra antiga '^(ubuntu|debian)$' SUMIU: com ela no ar, o pipeline
+  #    apagaria as proprias tags moveis novas logo depois de cria-las.
+  # ---------------------------------------------------------------------------
+  cleanup:
+    needs: record
+    if: always() && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - name: Aplicar a politica de retencao
+        env:
+          REPO:       ${{ env.IMAGE_NAME }}
+          DH_USER:    ${{ secrets.DOCKERHUB_USERNAME }}
+          DH_TOKEN:   ${{ secrets.DOCKERHUB_TOKEN }}
+          KEEP_DAYS:  '180'
+          KEEP_MIN:   '12'
+          MAX_DELETE: '10'
+          DRY_RUN:    'true'   # vire para 'false' depois de conferir o plano 2x
+        run: |
+          set -uo pipefail
+          W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
+
+          # Regex avaliada pelo bash, nunca passada por awk -v: em awk -v um
+          # '\.' vira '.' e passa a casar qualquer caractere, em silencio.
+          IMUT='^[0-9]+\.[0-9]+\.[0-9]+-(ubuntu|debian)-[0-9]{8}\.[0-9]+(r[0-9]+)?$'
+
+          # Inventario completo. Campos separados por '|': tag do Docker Hub nao
+          # pode conter '|', e IFS=tab colapsaria um digest vazio.
+          URL="https://hub.docker.com/v2/repositories/${REPO}/tags?page_size=100"
+          : > "$W/all"
+          while [ -n "$URL" ] && [ "$URL" != "null" ]; do
+            BODY=$(curl -fsS --max-time 30 "$URL") || {
+              echo "::warning::Docker Hub indisponivel. Limpeza abortada sem apagar nada."; exit 0; }
+            jq -r '.results[] | [.name, (.digest // "sem-digest"),
+                   (.tag_last_pushed // .last_updated // "1970-01-01T00:00:00Z")] | join("|")' \
+              <<<"$BODY" >> "$W/all"
+            URL=$(jq -r '.next // ""' <<<"$BODY")
+          done
+          echo "Inventario: $(wc -l < "$W/all" | tr -d ' ') tag(s)."
+
+          : > "$W/imut"; : > "$W/movel"
+          while IFS='|' read -r NAME DIGEST PUSHED; do
+            [ -n "${NAME:-}" ] || continue
+            TS=$(date -u -d "$PUSHED" +%s 2>/dev/null || echo 0)
+            if [[ "$NAME" =~ $IMUT ]]; then echo "$NAME|$DIGEST|$TS" >> "$W/imut"
+            else                            echo "$NAME|$DIGEST|$TS" >> "$W/movel"; fi
+          done < "$W/all"
+
+          # Protecao 1: digest ainda apontado por qualquer tag movel.
+          cut -d'|' -f2 "$W/movel" | grep -v '^$' | LC_ALL=C sort -u > "$W/em_uso"
+          echo "__nenhum__" >> "$W/em_uso"
+
+          # Protecao 2: as KEEP_MIN mais recentes de cada variante.
+          # Protecao 3: a mais recente de cada serie <versao>-<os>.
+          : > "$W/prot"
+          awk -F'|' '{ split($1,p,"-"); print p[1] "-" p[2] "|" p[2] "|" $1 "|" $3 }' "$W/imut" > "$W/enr"
+          sort -t'|' -k2,2 -k4,4nr "$W/enr" \
+            | awk -F'|' -v k="$KEEP_MIN" '{ if ($2!=v) { v=$2; n=0 } n++; if (n<=k) print $3 }' >> "$W/prot"
+          sort -t'|' -k1,1 -k4,4nr "$W/enr" \
+            | awk -F'|' '{ if ($1!=s) { s=$1; print $3 } }' >> "$W/prot"
+
+          # Protecao 4: o que o dono fixou a mao em .github/pinned-tags.txt.
+          # '|| true': um arquivo so com comentarios faz o grep devolver 1 e,
+          # com o errexit que o runner liga, derrubaria a limpeza inteira.
+          [ -f .github/pinned-tags.txt ] \
+            && { grep -vE '^\s*(#|$)' .github/pinned-tags.txt >> "$W/prot" || true; }
+          echo "__nenhuma__" >> "$W/prot"
+          LC_ALL=C sort -u -o "$W/prot" "$W/prot"
+
+          # Protecao 5: carencia minima em dias, seja qual for a contagem.
+          CUTOFF=$(( $(date -u +%s) - KEEP_DAYS * 86400 ))
+          : > "$W/plano"
+          while IFS='|' read -r NAME DIGEST TS; do
+            [ -n "${NAME:-}" ] || continue
+            [ "$TS" -ge "$CUTOFF" ]              && continue
+            grep -qxF "$NAME"   "$W/prot"        && continue
+            grep -qxF "$DIGEST" "$W/em_uso"      && continue
+            echo "$NAME" >> "$W/plano"
+          done < "$W/imut"
+
+          N=$(wc -l < "$W/plano" | tr -d ' ')
+          if [ "$N" -eq 0 ]; then
+            echo "Nada a apagar (carencia ${KEEP_DAYS}d, minimo ${KEEP_MIN} por variante)."; exit 0
+          fi
+          echo "Plano de remocao ($N):"; sed 's/^/  - /' "$W/plano"
+
+          # Freio: uma regressao de regex nao pode virar limpeza em massa.
+          if [ "$N" -gt "$MAX_DELETE" ]; then
+            echo "::error::Plano com $N remocoes excede MAX_DELETE=$MAX_DELETE. Nada foi apagado."; exit 1
+          fi
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "DRY_RUN=true: nada foi apagado."; exit 0
+          fi
+
+          JWT=$(curl -fsS -H 'Content-Type: application/json' -X POST \
+                 -d "{\"username\":\"${DH_USER}\",\"password\":\"${DH_TOKEN}\"}" \
+                 https://hub.docker.com/v2/users/login/ | jq -r '.token // empty')
+          [ -n "$JWT" ] || { echo "::error::Falha ao autenticar no Docker Hub"; exit 1; }
+
+          while IFS= read -r T; do
+            [ -n "$T" ] || continue
+            ST=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
+                  -H "Authorization: JWT $JWT" \
+                  "https://hub.docker.com/v2/repositories/${REPO}/tags/${T}/")
+            if [ "$ST" = "204" ]; then echo "removida: $T"
+            else echo "::warning::falha ao remover '$T' (HTTP $ST)"; fi
+          done < "$W/plano"

@@ -1,46 +1,91 @@
-# Usa a imagem base do Debian 13 (Trixie)
-FROM debian:trixie-slim
+# Base movel resolvida UMA vez pelo CI e fixada por digest, para que os runners
+# amd64 e arm64 construam do mesmo snapshot mesmo se a imagem oficial for
+# republicada no meio do build. Sem o CI, o default vale e um build local
+# continua funcionando igual.
+ARG BASE_REF=debian:trixie-slim
+FROM ${BASE_REF}
 
 # Argumento para evitar prompts durante a instalação
 ARG DEBIAN_FRONTEND=noninteractive
 
-# Labels para documentar a imagem no Docker Hub
-LABEL maintainer="cateim" \
-      org.label-schema.schema-version="1.0" \
-      org.label-schema.name="cateim/cups" \
-      org.label-schema.description="CUPS Server on Debian 13 (Trixie)"
+# Sem bloco LABEL aqui: os labels OCI (org.opencontainers.image.*, inclusive
+# base.name e base.digest, que dizem de qual snapshot da base esta imagem saiu)
+# sao injetados pelo job build do workflow, que passa a ser a unica fonte deles.
+# O antigo org.label-schema.* foi substituido pelo padrao OCI em 2018.
 
-# Instala o CUPS, drivers e dependências
+# A base debian:*-slim descarta /usr/share/doc/*, e com ele o changelog que diz
+# QUAL patch entrou, que e a fonte usada pelo relatorio de procedencia do CI.
+# O dpkg decide pela ULTIMA regra que casa e le os fragmentos de
+# /etc/dpkg/dpkg.cfg.d/ em ordem, entao 'zz-' vence o path-exclude do slim.
+# Vale para tudo que for instalado depois desta linha, que e o que interessa.
+RUN echo 'path-include=/usr/share/doc/*/changelog.*' \
+      > /etc/dpkg/dpkg.cfg.d/zz-keep-changelogs
+
+# Instala o CUPS, os catalogos de PPD e os drivers de impressora.
+#
+# ATENCAO ao 'printer-driver-all', que estava aqui e SAIU: ele e um metapacote
+# que so tem Recommends, zero Depends. Combinado com o --no-install-recommends
+# desta linha, ele instalava EXATAMENTE NADA. A imagem publicava a promessa de
+# suporte amplo e entregava dois drivers: foo2zjs (explicito) e hpcups (que
+# entra como Depends do hplip). Por isso os drivers vao listados um a um.
+#
+# A lista explicita e proposital: se um driver sair do archive, o build QUEBRA
+# alto e a gente fica sabendo. Pelo metapacote com Recommends ele sumiria da
+# imagem em silencio, que foi exatamente como o problema passou despercebido.
 RUN apt-get update \
  && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends \
-    sudo \
     bash \
     passwd \
     cups \
     cups-bsd \
     cups-filters \
     foomatic-db-compressed-ppds \
-    printer-driver-all \
     openprinting-ppds \
     hplip \
-    printer-driver-foo2zjs \
     avahi-daemon \
     libnss-mdns \
-    python3-setuptools \
-    python3-pil \
-    python3-dev \
-    libjpeg-dev \
-    zlib1g-dev \
+    printer-driver-foo2zjs \
+    printer-driver-brlaser \
+    printer-driver-c2050 \
+    printer-driver-c2esp \
+    printer-driver-cjet \
+    printer-driver-dymo \
+    printer-driver-escpr \
+    printer-driver-fujixerox \
+    printer-driver-gutenprint \
+    printer-driver-indexbraille \
+    printer-driver-m2300w \
+    printer-driver-min12xxw \
+    printer-driver-oki \
+    printer-driver-pnm2ppa \
+    printer-driver-postscript-hp \
+    printer-driver-ptouch \
+    printer-driver-pxljr \
+    printer-driver-sag-gdi \
+    printer-driver-splix \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
-# Cria um usuário 'admin' dedicado e dá as permissões corretas
+# Cria o usuario 'admin', que e a identidade de login da UI web do CUPS. A UI
+# autentica por PAM contra as contas do sistema, e quem autoriza a area de
+# administracao e a adesao a um grupo do SystemGroup do cups-files.conf, que no
+# Debian e no Ubuntu e 'lpadmin root'. Ou seja: 'adduser admin lpadmin' e a
+# linha que faz o login funcionar.
+#
+# Sem o pacote 'sudo' e sem NOPASSWD, de proposito: com os dois, quem
+# descobrisse a senha da UI web em :631 ganhava root dentro do container, e num
+# compose com 'privileged: true' isso vira root no HOST. Nada no caminho de
+# impressao usa sudo: o cupsd roda como PID 1 root e e ele quem invoca os
+# filtros e o backend.
+#
+# A adesao ao grupo 'sudo' fica por compatibilidade, para o caso de algum
+# derivado incluir esse grupo no SystemGroup. O grupo existe no base-passwd
+# mesmo sem o pacote instalado e, sem a regra do sudoers, nao concede nada.
 RUN adduser --home /home/admin --shell /bin/bash --gecos "admin" --disabled-password admin \
- && adduser admin sudo \
  && adduser admin lp \
  && adduser admin lpadmin \
- && echo 'admin ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+ && adduser admin sudo
 
 # Pré-configura o CUPS para aceitar conexões remotas e compartilhar impressoras
 RUN /usr/sbin/cupsd \

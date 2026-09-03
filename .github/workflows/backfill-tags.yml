@@ -1,0 +1,97 @@
+name: Backfill de tags imutaveis
+
+# =============================================================================
+# WORKFLOW DESCARTAVEL. Rode UMA vez, confira a saida, e apague o arquivo.
+#
+# Por que ele existe: as tags publicadas antes da politica de imutabilidade
+# (latest, 2.4.16-ubuntu, 2.4.12-ubuntu, 2.4.10-debian) sao todas MOVEIS. No
+# primeiro build do pipeline novo, 'latest' e '2.4.16-ubuntu' reapontam para a
+# imagem nova e o conteudo que hoje roda em producao fica sem nenhum nome: nao
+# da mais para voltar para ele por tag, so por digest anotado a mao.
+#
+# Este workflow da um nome imutavel a cada um desses digests, no formato que o
+# pipeline novo usa, para que o rollback continue possivel.
+#
+# Usa 'crane tag', nao 'imagetools create': o crane republica os MESMOS bytes de
+# manifesto sob um nome novo, entao o digest e preservado por definicao. O
+# imagetools pode reempacotar o indice e mudar o digest, o que aqui derrotaria
+# todo o proposito.
+#
+# O sufixo '.0' e proposital: github.run_number nunca e 0, entao estas tags
+# jamais colidem com as cunhadas pelo pipeline, e casam com a regex de retencao
+# do job cleanup.
+# =============================================================================
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Instalar o crane
+        uses: imjasonh/setup-crane@v0.7
+
+      - name: Login no Docker Hub
+        env:
+          DH_USER:  ${{ secrets.DOCKERHUB_USERNAME }}
+          DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: printf '%s' "$DH_TOKEN" | crane auth login docker.io -u "$DH_USER" --password-stdin
+
+      - name: Cunhar os nomes imutaveis
+        env:
+          IMAGE: cateim/cups
+        run: |
+          set -euo pipefail
+
+          # digest                                                                       tag imutavel
+          MAP='
+          sha256:764a20adb4c605f072dcfe3cd351af0e3320814798273ae7d4a3ec4a8f769ee8 2.4.16-ubuntu-20260510.0
+          sha256:2332c19919a474b63f5fb71d2f5a93c80213777fe8be705b2b32f99dd29e25a9 2.4.12-ubuntu-20260501.0
+          sha256:0f745c0d44386c6df1407652989749f11d8a9136b5ad31a81e110ab4b6ff5051 2.4.10-debian-20260501.0
+          '
+
+          FAIL=0
+          while read -r D T; do
+            [ -n "${D:-}" ] || continue
+
+            # Confere que o digest ainda existe antes de tentar tagear, para a
+            # mensagem de erro dizer o que houve em vez de morrer no crane.
+            if ! crane digest "${IMAGE}@${D}" >/dev/null 2>&1; then
+              echo "::error::digest ausente no registry: $D"; FAIL=1; continue
+            fi
+
+            # Sem --platform: queremos tagear o INDICE inteiro (amd64 + arm64),
+            # nao um manifesto de plataforma.
+            crane tag "${IMAGE}@${D}" "$T"
+
+            G=$(crane digest "${IMAGE}:${T}")
+            if [ "$G" != "$D" ]; then
+              echo "::error::$T ficou em $G, esperado $D"; FAIL=1
+            else
+              echo "ok: $T -> $D"
+            fi
+          done <<< "$MAP"
+
+          exit $FAIL
+
+      - name: Conferir o resultado
+        env:
+          IMAGE: cateim/cups
+        run: |
+          set -euo pipefail
+          # O digest sai numa substituicao de comando dentro do printf, e o
+          # status do crane se perderia ali. Por isso ele vai para uma variavel
+          # antes, com o '|| ' explicito, senao este passo nunca reprovaria.
+          FAIL=0
+          for T in 2.4.16-ubuntu-20260510.0 2.4.12-ubuntu-20260501.0 2.4.10-debian-20260501.0; do
+            D=$(crane digest "${IMAGE}:${T}") || { echo "::error::tag ausente: $T"; FAIL=1; continue; }
+            printf '%-26s %s\n' "$T" "$D"
+          done
+          [ "$FAIL" -eq 0 ] || exit 1
+          echo
+          echo "Fixe a tag da imagem em producao no Portainer e apague este workflow."

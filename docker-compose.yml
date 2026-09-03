@@ -2,11 +2,79 @@ services:
   cups:
     image: cateim/cups:latest
     container_name: cups
-    privileged: true
     restart: unless-stopped
+    # ATENCAO antes de mexer aqui.
+    #
+    # 'privileged: true' concede 7 coisas (todas as capabilities, seccomp e
+    # AppArmor desligados, rotulo SELinux desligado, acesso a TODOS os devices,
+    # /sys e cgroups em modo escrita). A impressao USB consome exatamente UMA:
+    # o acesso a todos os devices. As outras 6 sao superficie de ataque pura.
+    #
+    # O bloco comentado abaixo repoe so o que a impressao usa. O major 189 e o
+    # do usbfs (/dev/bus/usb), confirmado em include/linux/usb.h:
+    # '#define USB_DEVICE_MAJOR 189'. As letras sao r=read, w=write, m=mknod;
+    # 'w' e obrigatorio, porque a libusb abre o no com O_RDWR.
+    #
+    # POR QUE SO O DEVICE CGROUP: o udev do systemd poe o no da impressora como
+    # root:lp modo 0664 (regra 50-udev-default: SUBSYSTEM=="usb" com
+    # ID_USB_INTERFACES casando 0701, que e a classe 'printer', recebe
+    # GROUP="lp"). Os backends do CUPS rodam como lp:lp, e o gid 7 do grupo lp e
+    # o mesmo no host e no container porque o base-passwd o aloca estaticamente.
+    # Ou seja: o backend ja abre o dispositivo em leitura e escrita pelos bits
+    # do GRUPO, e nao precisa de CAP_DAC_OVERRIDE nem de privileged para isso.
+    # Verificado num Orange Pi 5 com Debian 12 e a P1102:
+    #   stat -c '%n dono=%U grupo=%G modo=%a' /dev/bus/usb/BBB/DDD
+    #   -> dono=root grupo=lp modo=664
+    #
+    # ARMADILHA CONFIRMADA no codigo do Docker (daemon/oci_linux.go, WithDevices):
+    # 'device_cgroup_rules' so e aplicado no ramo NAO privilegiado. Deixar os
+    # dois ligados ao mesmo tempo nao e cinto e suspensorio: a regra vira letra
+    # morta e o teste nao prova nada. Ou um, ou outro.
+    #
+    # Para migrar, com a impressora LIGADA e alguem por perto:
+    #   1. comente 'privileged: true' e descomente os blocos abaixo
+    #   2. redeploy e imprima uma pagina de teste
+    #   3. DESLIGUE e RELIGUE a impressora e imprima de novo (teste de hotplug,
+    #      que e onde isso costuma falhar depois e nao na hora)
+    #   4. rollback, se precisar: reponha 'privileged: true' e redeploy
+    #
+    # Se a sua impressora NAO ganhar o grupo lp no no de /dev/bus/usb (acontece
+    # com dispositivos que nao anunciam a classe printer, tipicamente
+    # multifuncionais que se apresentam como armazenamento), o caminho e uma
+    # regra udev no HOST dando GROUP="lp" ao seu idVendor/idProduct, e nao
+    # voltar para privileged.
+    privileged: true
+    # device_cgroup_rules:
+    #   # Faixa de minor nao e aceita pelo Docker (o regex exige digito ou '*'),
+    #   # e o minor muda a cada religada, entao '*' e o mais estreito que e estavel.
+    #   - 'c 189:* rmw'
+    # security_opt:
+    #   - no-new-privileges:true
+    # cap_drop:
+    #   - ALL
+    # cap_add:
+    #   # O cupsd chama setgid() e setgroups() ao lancar CADA filtro e backend
+    #   # (scheduler/process.c). Sem estas duas, todo job morre no arranque.
+    #   - SETGID
+    #   - SETUID
+    #   # O cupsd envia sinal aos filtros e backends que ele mesmo lancou, mas
+    #   # eles ja rodaram setuid para lp, entao o remetente e o destinatario tem
+    #   # uid diferente e o kernel exige CAP_KILL. Sem ela, cancelar um job e
+    #   # parar uma fila deixam de funcionar.
+    #   - KILL
+    #   # Bind do :631 quando alguem rodar a imagem com usuario nao root.
+    #   - NET_BIND_SERVICE
+    #   # O entrypoint usa chpasswd, e o cupsd ajusta dono de arquivos em /var/spool.
+    #   - CHOWN
+    #   - DAC_OVERRIDE
+    #   - FOWNER
     environment:
-      - ADMIN_PASSWORD=YourStrongPassword
-      - TZ=America/Sao_Paulo
+      # Obrigatoria, sem default. Defina no campo Environment variables da stack
+      # no Portainer, ou num .env local. O ':?' aborta a subida com mensagem
+      # clara em vez de deixar o CUPS no ar com uma senha publica conhecida:
+      # este arquivo e o manifesto que o Portainer aplica, nao um exemplo.
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?defina ADMIN_PASSWORD no ambiente da stack}
+      - TZ=${TZ:-America/Sao_Paulo}
     volumes:
       - /srv/cups/config:/etc/cups
       - /srv/cups/logs:/var/log/cups
@@ -19,3 +87,15 @@ services:
       - "631:631"
     network_mode: bridge
     hostname: cups
+    # Da tempo ao cupsd de gravar job.cache, printers.conf e subscriptions.conf
+    # antes do SIGKILL. O default do Docker e 10s. O entrypoint termina em
+    # exec "$@", entao o cupsd e o PID 1 e recebe o SIGTERM diretamente.
+    stop_grace_period: 30s
+    # O error_log do CUPS vai para /srv/cups/logs e o proprio CUPS o rotaciona
+    # via MaxLogSize. Este bloco limita apenas o json-file do Docker, que recolhe
+    # o arranque do cupsd e cresceria sem limite num crash loop.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

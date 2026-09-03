@@ -1,5 +1,28 @@
-.git* export-ignore
-.mailmap export-ignore
-examples/testfile.pcl -text
-examples/testfile.txt -text
-scripts export-ignore
+# cateim/cups - line endings and archive contents
+
+# ---- Line endings ----
+# Everything is stored and checked out with LF. This machine has
+# core.autocrlf=true, so without this rule a fresh clone on Windows checks out
+# every file with CRLF, docker-entrypoint.sh included. A build from such a
+# checkout produces a container that dies at boot with
+# "/bin/bash: -e$'\r': invalid option". CI builds on Linux and is not affected
+# today, so this is prevention, not a fix for a live failure.
+* text=auto eol=lf
+
+# Forced text, never auto-detected as binary: this is the file the container
+# executes, and a wrong guess here is a boot failure.
+*.sh text eol=lf
+
+# ---- Binary ----
+# Forward guard: none of these exist yet, they are here so a future .ppd or a
+# README screenshot cannot be mangled by the eol=lf rule above.
+*.png binary
+*.jpg binary
+*.pdf binary
+*.ppd binary
+
+# ---- Source archives (git archive / GitHub "Download ZIP") ----
+# Only the two files that describe git itself are dropped, so .github/ and
+# .dockerignore stay in and the downloaded archive is still buildable.
+.gitattributes export-ignore
+.gitignore     export-ignore

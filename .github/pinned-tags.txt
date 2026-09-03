@@ -1,0 +1,10 @@
+# Tags imutaveis que o job cleanup NUNCA pode apagar, uma por linha.
+#
+# A retencao normal ja guarda toda tag imutavel por pelo menos KEEP_DAYS (180
+# dias), mais as KEEP_MIN (12) mais recentes de cada variante e a mais recente de
+# cada serie do CUPS. Este arquivo existe para o que precisa sobreviver ALEM
+# disso: a tag exata que roda num servidor de producao, por exemplo.
+#
+# Linhas em branco e linhas comecando com # sao ignoradas.
+# Exemplo:
+#   2.4.16-ubuntu-20260903.31

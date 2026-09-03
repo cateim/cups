@@ -4,9 +4,9 @@
 ![Docker Hub Pulls](https://img.shields.io/docker/pulls/cateim/cups?style=for-the-badge)
 ![Docker Image Size](https://img.shields.io/docker/image-size/cateim/cups/latest?style=for-the-badge)
 
-*[🇧🇷 Leia em Português](https://github.com/CaTeIM/cups/blob/master/README.pt-br.md)*
+_[🇧🇷 Leia em Português](https://github.com/CaTeIM/cups/blob/master/README.pt-br.md)_
 
-This is a multi-architecture Docker image of **[CUPS (Common Unix Printing System)](https://github.com/OpenPrinting/cups)**, built upon the latest **Ubuntu (Rolling)** and **Debian (Testing)** bases. The goal is to provide a print server with the latest CUPS versions, ready to use and easy to deploy in containerized environments.
+This is a multi-architecture Docker image of **[CUPS (Common Unix Printing System)](https://github.com/OpenPrinting/cups)**, built upon the latest **Ubuntu (Rolling)** and **Debian 13 (Trixie)** bases. The goal is to provide a print server with the latest CUPS versions, ready to use and easy to deploy in containerized environments.
 
 ## 📚 Source Code
 
@@ -16,28 +16,55 @@ This is an open-source project. The `Dockerfile`, startup script, and GitHub Act
 
 ## 🐳 Available Tags
 
-This repository builds two image "tracks". The `latest` tag always points to the Ubuntu base.
+This repository builds two image "tracks", Ubuntu and Debian. Tags come in two
+classes, and the difference matters in production.
 
-| Tag | Distro Base | CUPS Version |
-| :--- | :--- | :--- |
-| `latest`, `[version]-ubuntu` | Ubuntu (Rolling) | Dynamically updated |
-| `[version]-debian` | Debian 13 (Trixie) | Dynamically updated |
+**Moving tags** always point at the newest published build of their track:
 
-*💡 **Note:** The `[version]` tags (e.g., `2.4.12-ubuntu`, `2.4.12-debian`) are dynamically extracted from the upstream OS package manager. The images are automatically rebuilt every Sunday — but only when a new CUPS version is available.*
+| Tag                                    | Distro base        | Points to                         |
+| :------------------------------------- | :----------------- | :-------------------------------- |
+| `latest`, `ubuntu`                     | Ubuntu (Rolling)   | newest Ubuntu build               |
+| `debian`                               | Debian 13 (Trixie) | newest Debian build               |
+| `[version]-ubuntu`, `[version]-debian` | either             | newest build of that CUPS version |
+
+**Immutable tags** are cut once and never rewritten:
+
+| Tag format                            | Example                     |
+| :------------------------------------ | :-------------------------- |
+| `[version]-[distro]-[YYYYMMDD].[run]` | `2.4.16-ubuntu-20260903.31` |
+
+_💡 **Pin an immutable tag in production.** A moving tag is convenient, but it
+changes under you; an immutable one is the only way to know exactly what is
+running and to roll back to it. Browse the
+[Tags tab](https://hub.docker.com/r/cateim/cups/tags) for the current list._
 
 ## ✨ Why use this image?
 
--   ✅ **Always Up-to-Date**: Uses the `apt-get` installation method from the official Ubuntu Rolling and Debian 13 repositories. The image is automatically rebuilt every week to include the latest OS security patches and CUPS updates.
+- ✅ **Always Up-to-Date**: Rebuilt from scratch every Sunday against the live
+  Ubuntu Rolling and Debian 13 archives. A new image is published whenever any
+  installed package changes version, not only when CUPS itself is updated, so
+  OS security patches actually reach you. When a rebuild finds nothing new,
+  nothing is published and the moving tags stay put.
 
--   ✅ **Multi-Distro**: Choose between an Ubuntu (`latest`, `2.x.x-ubuntu`) or Debian (`2.x.x-debian`) base, depending on your preference.
+- ✅ **Tells You What Changed**: Every published build records which packages
+  moved, from which version to which, and the CVEs the maintainers cite in the
+  package changelogs. It is written to the image itself as OCI annotations
+  (`docker buildx imagetools inspect cateim/cups:latest --raw | jq .annotations`)
+  and kept permanently in [`.github/builds/`](https://github.com/CaTeIM/cups/tree/master/.github/builds).
 
--   🔒 **Secure**: The build process includes applying all available security updates (`apt-get upgrade`).
+- ✅ **Multi-Distro**: Choose between an Ubuntu (`latest`, `2.x.x-ubuntu`) or Debian (`2.x.x-debian`) base, depending on your preference.
 
--   🖨️ **Ready to Use**: Includes a comprehensive set of print drivers (`printer-driver-all`, `hplip`, `openprinting-ppds`), making most printers plug-and-play.
+- 🔒 **Secure**: The build process includes applying all available security updates (`apt-get upgrade`).
 
--   🚀 **Multi-Architecture**: Built to run natively on `linux/amd64` (PCs, Intel/AMD Servers) and `linux/arm64` (Raspberry Pi, Orange Pi 5, etc.).
+- 🖨️ **Ready to Use**: Ships 19 print drivers (Brother, Epson, Canon, Samsung,
+    Oki, Dymo, Lexmark, HP and more) plus `hplip` and the `openprinting-ppds` and
+    `foomatic-db` PPD catalogues, so most printers are plug and play. Each driver
+    is listed explicitly in the Dockerfile, so one disappearing from the distro
+    breaks the build instead of quietly vanishing from the image.
 
--   🔧 **Smart Configuration**: Features a startup script that sets up an admin user and prepares CUPS for remote access on the first run.
+- 🚀 **Multi-Architecture**: Built to run natively on `linux/amd64` (PCs, Intel/AMD Servers) and `linux/arm64` (Raspberry Pi, Orange Pi 5, etc.).
+
+- 🔧 **Smart Configuration**: Features a startup script that sets up an admin user and prepares CUPS for remote access on the first run.
 
 ## ⚙️ How to Use (Example with `docker-compose.yml`)
 
@@ -48,43 +75,95 @@ The recommended way to use this image is with Portainer Stacks or `docker-compos
 ```yaml
 services:
   cups:
-    # Use 'latest' (Ubuntu) or version-specific tags like '2.4.x-ubuntu' / '2.4.x-debian'
+    # 'latest' tracks Ubuntu. In production, prefer an immutable tag:
+    # cateim/cups:2.4.16-ubuntu-20260903.31
     image: cateim/cups:latest
     container_name: cups
-    # Gives the container full access to system devices (mandatory for USB)
+    # Unrestricted access to host devices. Works everywhere, but is far more
+    # than printing needs: see "Running without privileged" below.
     privileged: true
     restart: unless-stopped
     environment:
-      # Define a secure password for the 'admin' user on the web interface
+      # Password for the 'admin' user on the web interface. Required.
       - ADMIN_PASSWORD=your_strong_password
-      # Set your timezone
       - TZ=America/Sao_Paulo
     volumes:
-      # --- Configuration and Data ---
+      # --- Configuration and data ---
       - /srv/cups/config:/etc/cups
       - /srv/cups/logs:/var/log/cups
       - /srv/cups/spool:/var/spool/cups
-      # --- Hardware and System (CRITICAL FOR USB) ---
-      # Physical access to USB ports
+      # --- Hardware and system (CRITICAL FOR USB) ---
+      # Physical access to the USB ports. Keep it as a bind mount: it is what
+      # makes hotplug work, because nodes created after the container started
+      # appear through it.
       - /dev/bus/usb:/dev/bus/usb
-      # Allows communication with system services (fixes ColorManager/DBus errors)
+      # Talks to the host system services (fixes ColorManager/DBus errors)
       - /run/dbus:/run/dbus:ro
-      # Allows CUPS to detect hardware events (e.g., reloading paper, opening cover)
+      # Lets CUPS see hardware events (paper reload, cover open)
       - /run/udev:/run/udev:ro
-      # Synchronize the clock with the Host
       - /etc/localtime:/etc/localtime:ro
-    # 'host' is the easiest way to ensure printer discovery on the network (AirPrint/Bonjour)
-    # If you prefer 'bridge', make sure to expose port 631:631
     ports:
       - "631:631"
+    # 'bridge' with the port published is the portable choice. 'host' makes
+    # network discovery (AirPrint/Bonjour) easier, at the cost of isolation.
     network_mode: bridge
     hostname: cups
+    # Gives cupsd time to write job.cache and printers.conf before SIGKILL.
+    stop_grace_period: 30s
+    # CUPS rotates its own error_log; this only caps Docker's json-file, which
+    # would otherwise grow without limit in a crash loop.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 ```
 
 ### 🔑 Administration
 
-  - To access the web interface, use the address: `https://<YOUR_SERVER_IP>:631`
-  - To access the **Administration** area, use the login `admin` and the password you defined in the `ADMIN_PASSWORD` variable.
+- To access the web interface, use the address: `https://<YOUR_SERVER_IP>:631`
+- To access the **Administration** area, use the login `admin` and the password you defined in the `ADMIN_PASSWORD` variable.
+
+## 🔒 Running without `privileged`
+
+The compose example above uses `privileged: true` because it works everywhere,
+but it is far more access than printing needs. Of the seven things `privileged`
+grants, USB printing consumes exactly one: unrestricted device cgroup access.
+The other six are attack surface.
+
+To drop it, replace `privileged: true` with:
+
+```yaml
+    device_cgroup_rules:
+      - 'c 189:* rmw'          # 189 is the usbfs major (include/linux/usb.h)
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add: [SETGID, SETUID, KILL, CHOWN, DAC_OVERRIDE, FOWNER, NET_BIND_SERVICE]
+```
+
+Keep the `/dev/bus/usb` bind mount. It is what makes hotplug work: nodes created
+after the container started show up through it, while a `devices:` entry is a
+snapshot taken at creation time and breaks the first time the printer is power
+cycled.
+
+Why this is enough: udev gives printer nodes `root:lp` mode `0664`, and CUPS
+backends run as `lp`, so the backend already opens the device read-write through
+the group bits. Verify yours with:
+
+```sh
+stat -c '%n owner=%U group=%G mode=%a' /dev/bus/usb/BBB/DDD
+```
+
+If your printer does not get `group=lp` (some multifunction devices announce
+themselves as storage rather than as the printer class), add a udev rule on the
+**host** granting `GROUP="lp"` for your `idVendor`/`idProduct`, rather than going
+back to `privileged`.
+
+**Two traps worth knowing.** `device_cgroup_rules` is silently ignored while
+`privileged: true` is set, so the two cannot be combined "just to be safe": the
+rule becomes dead letter and the test proves nothing. And after switching, test
+by **power cycling the printer** and printing again, not just by printing once.
 
 ## 🐛 Troubleshooting (USB and "Host-Based" Printers)
 
@@ -116,4 +195,4 @@ If you run out of paper and the job is held, avoid turning off the printer.
 
 ---
 
-*This project is not officially affiliated with OpenPrinting. All credit for CUPS goes to its respective developers.*
+_This project is not officially affiliated with OpenPrinting. All credit for CUPS goes to its respective developers._

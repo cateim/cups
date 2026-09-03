@@ -1,1 +1,41 @@
+# cateim/cups - arquivos que nunca entram no repositorio
+
+# ---- Ambiente ----
+# O docker-compose.yml passa ADMIN_PASSWORD ao container. O valor real vive no
+# ambiente da stack no Portainer; um .env local serve so para experimentos e
+# nunca pode alcancar o historico. O .env.example e o contrato commitado.
+.env
+.env.*
+!.env.example
+
+# ---- Logs ----
+*.log
+
+# ---- Gerado e regeneravel ----
+# Grafo de conhecimento do /graphify: derivado deste repo, sempre reconstruivel.
+graphify-out/
+
+# ---- SO e editores ----
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+
+# ---- Anexos soltos na raiz ----
+# Manuais de impressora e notas fiscais chegam por e-mail e caem na raiz.
+# Ancorado na raiz de proposito: docs/manual.pdf continua versionavel, e *.ppd
+# fica de fora porque um PPD customizado e um asset legitimo deste repo.
+/*.pdf
+/*.docx
+/*.xlsx
+/*.xls
+/*.csv
+/*.zip
+
+# ---- Especifico deste repo ----
+# Runbook da impressora no host do dono: nomeia o equipamento, o numero de serie
+# e a topologia da rede local, entao fica fora do repo publico. A versao
+# sanitizada e publicavel vive em docs/. Deliberado desde e09e294.
 install_printer.md

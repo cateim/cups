@@ -550,8 +550,11 @@ jobs:
           else MOTIVO="nenhuma mudanca de pacote"
           fi
 
-          printf 'Decisao: **%s** (%s).\n' \
-            "$([ "$PUBLISH" = "true" ] && echo PUBLICAR || echo 'nao publicar')" "$MOTIVO" >> "$OUT"
+          VEREDITO=$([ "$PUBLISH" = "true" ] && echo PUBLICAR || echo 'nao publicar')
+          printf 'Decisao: **%s** (%s).\n' "$VEREDITO" "$MOTIVO" >> "$OUT"
+          # Tambem no stdout: o relatorio inteiro vai para o Step Summary, mas
+          # quem abre o LOG do job precisa ver a decisao sem sair da pagina.
+          echo "[${OS_VARIANT}] decisao: ${VEREDITO} (${MOTIVO})"
 
           # Artefatos para o job record. Gerados SEMPRE, publique ou nao: e o
           # status.json que permite ao record gravar "verifiquei e nada mudou"

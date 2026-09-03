@@ -1,0 +1,34 @@
+# Dependabot para cateim/cups.
+#
+# Ecossistema unico: github-actions. Nao ha package.json, go.mod nem equivalente
+# neste repositorio, e o ecossistema 'docker' nao ajuda aqui porque as bases sao
+# tags MOVEIS por design (ubuntu:rolling e debian:trixie-slim). Quem cuida de
+# manter a base em dia e o proprio pipeline, que reconstroi toda semana.
+#
+# ATENCAO ao mergear: as actions estao varios majors atras e o pipeline de
+# publicacao acabou de ser validado com as versoes atuais. Mergeie UMA POR VEZ,
+# conferindo um run verde entre elas, com atencao especial a
+# docker/build-push-action: o caminho de push-by-digest mais o
+# 'oci-mediatypes=true' e o que faz as annotations OCI sobreviverem ao
+# imagetools create, e um major novo por cima trocaria um caminho TESTADO por um
+# nao testado.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      # Patch e minor entram juntos: sao de baixo risco e nao vale um PR para
+      # cada. Os majors ficam de fora do grupo de proposito, para chegarem um a
+      # um e serem avaliados isoladamente.
+      actions-minor:
+        update-types:
+          - minor
+          - patch

@@ -53,6 +53,11 @@ and this project uses CalVer (`YYYY.M.R`).
 - `stop_grace_period` and a `logging` block with rotation in `docker-compose.yml`,
   so `cupsd` gets time to flush `job.cache` and `printers.conf` before SIGKILL and
   Docker's json-file cannot grow without bound during a crash loop.
+- `.github/dependabot.yml` for the GitHub Actions ecosystem. Minor and patch
+  updates are grouped; majors arrive one at a time on purpose, because the
+  publishing path was validated against the current versions.
+- The publication decision is now echoed to the job log, not only to the run
+  summary, so whoever opens the log sees why a run did or did not publish.
 
 ### Changed
 

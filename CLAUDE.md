@@ -110,12 +110,25 @@ Every tag is applied by a **single** `docker buildx imagetools create` call. Tha
 is the invariant that makes rollback safe: a moving tag never lands, not even for
 an instant, on a digest that has no immutable name.
 
-Rolling back a bad build means **repointing**, never deleting:
+Rolling back a bad build means **repointing**, never deleting. It writes to the
+registry, so it needs a push-capable login first, which a print server host does
+not have by default:
 
 ```sh
+# Without this the command fails with:
+#   ERROR: publish ...: failed commit on ref "index-sha256:...":
+#   server message: insufficient_scope: authorization failed
+printf '%s' "$DOCKERHUB_TOKEN" | docker login -u cateim --password-stdin
+
 docker buildx imagetools create -t cateim/cups:latest -t cateim/cups:2.4.16-ubuntu \
   cateim/cups:2.4.16-ubuntu-<good-date>.<run>
 ```
+
+Use a token with write scope, the same one CI uses. If you would rather not put a
+push token on the server, the alternative needs no login at all: pin the known
+good immutable tag (or its digest) in the Portainer stack and redeploy. That
+fixes what runs on your host without touching what everyone else pulls, which is
+usually what you actually want during an incident.
 
 Retention (`cleanup` job) is an **allow list**, never a block list, so a broken
 regex means "deleted nothing" instead of "deleted latest". A tag survives if it
@@ -297,6 +310,11 @@ Each of these cost an investigation. Do not rediscover them.
   when giving an existing digest a new name.
 - **Never delete an immutable tag by hand** in the Docker Hub UI. Disable a bad
   build by repointing the moving tags.
+- **Rollback needs `docker login` first.** `imagetools create` writes to the
+  registry, and a print server host has no push credentials, so it fails with
+  `insufficient_scope: authorization failed`. Pinning the good tag in the
+  Portainer stack is the login-free alternative, and it is usually the better
+  one: it fixes your host without changing what everyone else pulls.
 - **The workflow id changes on rename.** It already changed once here, from
   `cups.yml` to `build.yml`. Always use the file name in `gh workflow enable`.
 - **`declare -A` plus `set -e`**: the `prepare` step deliberately runs with

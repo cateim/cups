@@ -294,7 +294,7 @@ jobs:
           echo "$D" > "/tmp/digests/${{ matrix.arch }}.txt"
 
       - name: Subir digest como artefato
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: digests-${{ matrix.os }}-${{ matrix.arch }}
           path: /tmp/digests/*.txt
@@ -664,7 +664,7 @@ jobs:
           docker buildx imagetools inspect "${IMAGE}:${TAG}" --raw | jq '.annotations'
 
       - name: Guardar o relatorio para o job record
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: record-${{ matrix.os }}
           path: /tmp/record/*

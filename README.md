@@ -119,6 +119,25 @@ services:
         max-file: "3"
 ```
 
+### ⚠️ Upgrading from an image built before 2026-09
+
+One breaking change, and it only affects you if you used it: **the `sudo`
+package and the `admin ALL=(ALL) NOPASSWD:ALL` rule were removed.** With both in
+place, anyone who learned the web UI password at :631 became root inside the
+container, and under `privileged: true` that is root on the host.
+
+- `docker exec cups <command>` runs as root and is **unaffected**, which is how
+  the documentation here has always told you to do it.
+- `docker exec -u admin cups sudo <command>` no longer works. Drop the `-u admin`
+  and the `sudo`.
+- Web UI login is **unaffected**: it is authorised by membership in `lpadmin`,
+  which the `admin` user still has.
+
+Everything else in that release is additive: 18 printer drivers that the image
+had always claimed to ship but never actually installed, and OCI provenance
+metadata. Despite the extra drivers the image got about 3% smaller, because
+build headers that nothing ever compiled against were dropped.
+
 ### 🔑 Administration
 
 - To access the web interface, use the address: `https://<YOUR_SERVER_IP>:631`

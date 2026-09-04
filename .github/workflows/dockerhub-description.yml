@@ -1,0 +1,71 @@
+name: Docker Hub description
+
+# =============================================================================
+# Sincroniza o README.md com a descricao do repositorio no Docker Hub.
+#
+# Por que existe: a vitrine do Docker Hub e SEPARADA do README do GitHub e nada
+# a atualizava. Corrigir o README aqui nao tirava de la a tag de exemplo que
+# nunca existiu, e e naquela pagina que nasce o 'docker pull' errado de quem
+# encontra a imagem pela primeira vez.
+#
+# So o README.md (ingles) vai para o Hub. O README.pt-br.md fica so no GitHub,
+# linkado a partir do topo do ingles por URL ABSOLUTA: link relativo, na pagina
+# do Hub, resolveria contra hub.docker.com e nao chegaria ao GitHub.
+# =============================================================================
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'README.md'
+      - '.github/workflows/dockerhub-description.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cups-hub-description
+  cancel-in-progress: true
+
+jobs:
+  description:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Conferir o que vai para a vitrine
+        run: |
+          set -euo pipefail
+          N=$(wc -c < README.md)
+          echo "README.md: ${N} bytes (o Docker Hub corta a descricao em 25000)"
+          [ "$N" -le 25000 ] || { echo "::error::README.md passou de 25000 bytes"; exit 1; }
+
+          # Link relativo vira link quebrado na pagina do Hub, porque resolve
+          # contra hub.docker.com. Melhor falhar aqui do que publicar a vitrine
+          # com links mortos.
+          if grep -nE '\]\((\.{0,2}/)?[^):#]+\)' README.md \
+             | grep -vE '\]\((https?://|#)' ; then
+            echo "::error::README.md tem link relativo, que quebra na pagina do Docker Hub"
+            exit 1
+          fi
+          echo "Nenhum link relativo. Pode publicar."
+
+      - name: Publicar a descricao
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          # ATENCAO: este endpoint NAO aceita um token de push. Precisa da senha
+          # da conta ou de um PAT com escopo de ESCRITA no repositorio. Se o
+          # secret for o mesmo token de push do build.yml, este passo devolve
+          # 401 e falha, que e o comportamento desejado: melhor falhar alto do
+          # que deixar a vitrine desatualizada em silencio.
+          password: ${{ secrets.DOCKERHUB_DESCRIPTION_TOKEN || secrets.DOCKERHUB_TOKEN }}
+          repository: cateim/cups
+          # O Docker Hub corta a descricao curta em 100 caracteres. Esta tem 94.
+          short-description: 'CUPS print server, multi-arch (amd64/arm64), rebuilt weekly and published only on real change.'
+          readme-filepath: ./README.md
+          enable-url-completion: true

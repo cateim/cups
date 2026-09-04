@@ -121,6 +121,25 @@ services:
         max-file: "3"
 ```
 
+### ⚠️ Atualizando a partir de uma imagem anterior a 2026-09
+
+Uma mudança incompatível, e ela só afeta você se usava isso: **o pacote `sudo` e
+a regra `admin ALL=(ALL) NOPASSWD:ALL` foram removidos.** Com os dois no lugar,
+quem descobrisse a senha da interface web em :631 virava root dentro do
+container, e com `privileged: true` isso é root no host.
+
+- `docker exec cups <comando>` roda como root e **não é afetado**, que é como
+  esta documentação sempre mandou fazer.
+- `docker exec -u admin cups sudo <comando>` deixa de funcionar. Tire o
+  `-u admin` e o `sudo`.
+- O login na interface web **não é afetado**: quem autoriza é a participação no
+  grupo `lpadmin`, que o usuário `admin` continua tendo.
+
+Todo o resto daquela versão só acrescenta: 18 drivers de impressora que a imagem
+sempre anunciou mas nunca instalou de fato, e metadados OCI de procedência.
+Apesar dos drivers a mais, a imagem ficou cerca de 3% menor, porque saíram
+headers de compilação que nada usava.
+
 ### 🔑 Administração
 
 - Para acessar a interface web, use o endereço: `https://<IP_DO_SEU_SERVIDOR>:631`

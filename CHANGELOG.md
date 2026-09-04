@@ -58,6 +58,13 @@ and this project uses CalVer (`YYYY.M.R`).
   publishing path was validated against the current versions.
 - The publication decision is now echoed to the job log, not only to the run
   summary, so whoever opens the log sees why a run did or did not publish.
+- `.github/workflows/dockerhub-description.yml`, which syncs README.md to the
+  Docker Hub repository description. Nothing did that before, so correcting the
+  README here never reached the page where a first-time `docker pull` is copied
+  from. It refuses to publish a README containing relative links, which resolve
+  against hub.docker.com and would render as dead links there.
+- An upgrade note in both READMEs about the removal of `sudo`, since this is a
+  public image and someone may be running `docker exec -u admin cups sudo ...`.
 
 ### Changed
 

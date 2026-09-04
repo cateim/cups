@@ -99,7 +99,7 @@ Two classes, and the difference is the whole point.
 
 ```
 <cups-version>-<variant>-<YYYYMMDD>.<run_number>[r<run_attempt>]
-2.4.16-ubuntu-20260903.31
+2.4.16-ubuntu-20260903.33
 ```
 
 `run_number` is monotonic and unique per repository, so two builds on the same

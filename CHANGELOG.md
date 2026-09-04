@@ -62,7 +62,8 @@ and this project uses CalVer (`YYYY.M.R`).
   Docker Hub repository description. Nothing did that before, so correcting the
   README here never reached the page where a first-time `docker pull` is copied
   from. It refuses to publish a README containing relative links, which resolve
-  against hub.docker.com and would render as dead links there.
+  against hub.docker.com and would render as dead links there, and it verifies
+  that every image tag the README mentions actually exists on Docker Hub.
 - An upgrade note in both READMEs about the removal of `sudo`, since this is a
   public image and someone may be running `docker exec -u admin cups sudo ...`.
 

@@ -31,7 +31,7 @@ classes, and the difference matters in production.
 
 | Tag format                            | Example                     |
 | :------------------------------------ | :-------------------------- |
-| `[version]-[distro]-[YYYYMMDD].[run]` | `2.4.16-ubuntu-20260903.31` |
+| `[version]-[distro]-[YYYYMMDD].[run]` | `2.4.16-ubuntu-20260903.33` |
 
 _💡 **Pin an immutable tag in production.** A moving tag is convenient, but it
 changes under you; an immutable one is the only way to know exactly what is
@@ -76,7 +76,7 @@ The recommended way to use this image is with Portainer Stacks or `docker-compos
 services:
   cups:
     # 'latest' tracks Ubuntu. In production, prefer an immutable tag:
-    # cateim/cups:2.4.16-ubuntu-20260903.31
+    # cateim/cups:2.4.16-ubuntu-20260903.33
     image: cateim/cups:latest
     container_name: cups
     # Unrestricted access to host devices. Works everywhere, but is far more

@@ -31,7 +31,7 @@ em duas classes, e a diferença importa em produção.
 
 | Formato da tag                       | Exemplo                     |
 | :----------------------------------- | :-------------------------- |
-| `[versão]-[distro]-[AAAAMMDD].[run]` | `2.4.16-ubuntu-20260903.31` |
+| `[versão]-[distro]-[AAAAMMDD].[run]` | `2.4.16-ubuntu-20260903.33` |
 
 _💡 **Fixe uma tag imutável em produção.** Tag móvel é cômoda, mas muda debaixo
 de você; a imutável é a única forma de saber exatamente o que está rodando e de
@@ -78,7 +78,7 @@ A forma recomendada de usar esta imagem é com o Portainer Stacks ou `docker-com
 services:
   cups:
     # 'latest' segue o Ubuntu. Em producao, prefira uma tag imutavel:
-    # cateim/cups:2.4.16-ubuntu-20260903.31
+    # cateim/cups:2.4.16-ubuntu-20260903.33
     image: cateim/cups:latest
     container_name: cups
     # Acesso irrestrito aos devices do host. Funciona em qualquer lugar, mas e

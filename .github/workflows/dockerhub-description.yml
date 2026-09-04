@@ -38,6 +38,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Conferir o que vai para a vitrine
+        env:
+          REPO: cateim/cups
         run: |
           set -euo pipefail
           N=$(wc -c < README.md)
@@ -52,7 +54,39 @@ jobs:
             echo "::error::README.md tem link relativo, que quebra na pagina do Docker Hub"
             exit 1
           fi
-          echo "Nenhum link relativo. Pode publicar."
+          echo "Nenhum link relativo."
+
+          # Toda tag citada no README tem de EXISTIR no Docker Hub. A vitrine e
+          # de onde sai o 'docker pull' de quem chega agora, e um exemplo
+          # inventado vira um pull que falha. Ja aconteceu duas vezes neste
+          # repositorio: um '2.4.12-debian' que nunca existiu ficou anos no ar,
+          # e depois um exemplo de tag imutavel escrito antes do build rodar,
+          # com o numero de run errado.
+          REAIS=$(mktemp)
+          URL="https://hub.docker.com/v2/repositories/${REPO}/tags?page_size=100"
+          while [ -n "$URL" ] && [ "$URL" != "null" ]; do
+            BODY=$(curl -fsS --max-time 30 "$URL") || {
+              echo "::warning::Docker Hub indisponivel. Pulei a conferencia de tags."
+              : > "$REAIS"; break; }
+            jq -r '.results[].name' <<<"$BODY" >> "$REAIS"
+            URL=$(jq -r '.next // ""' <<<"$BODY")
+          done
+
+          if [ -s "$REAIS" ]; then
+            FALTA=0
+            # Casa '<versao>-<variante>' com ou sem o sufixo datado da imutavel.
+            for T in $(grep -oE '\b[0-9]+\.[0-9]+\.[0-9]+-(ubuntu|debian)(-[0-9]{8}\.[0-9]+(r[0-9]+)?)?\b' README.md | sort -u); do
+              if grep -qxF "$T" "$REAIS"; then
+                echo "  ok, existe: $T"
+              else
+                echo "::error::README cita a tag '$T', que NAO existe em ${REPO}"
+                FALTA=1
+              fi
+            done
+            [ "$FALTA" -eq 0 ] || exit 1
+          fi
+
+          echo "Pode publicar."
 
       - name: Publicar a descricao
         id: publish

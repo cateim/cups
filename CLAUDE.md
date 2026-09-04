@@ -50,7 +50,10 @@ CHANGELOG.md              repository changelog (Keep a Changelog 1.1.0)
 
 ## Build pipeline
 
-`.github/workflows/build.yml`, five jobs.
+`.github/workflows/build.yml`, five jobs. A second workflow,
+`.github/workflows/dockerhub-description.yml`, publishes README.md as the Docker
+Hub repository description whenever it changes; nothing else keeps that page in
+sync, and it is where a first-time `docker pull` gets copied from.
 
 1. **`prepare`** resolves each base to an index **digest** (so amd64 and arm64
    build from the same snapshot), reads the CUPS version from that exact base,
@@ -213,6 +216,7 @@ Names only. Never read, echo or commit a value.
 | :--- | :--- | :--- |
 | `DOCKERHUB_USERNAME` | repo secret | login and the tag delete API |
 | `DOCKERHUB_TOKEN` | repo secret | same; needs delete scope for `cleanup` |
+| `DOCKERHUB_DESCRIPTION_TOKEN` | repo secret | optional; PAT with `Read, Write, Delete` scope, used only to sync the README to the Docker Hub description. That endpoint rejects a push token with `Forbidden`, so it cannot reuse `DOCKERHUB_TOKEN`. Falls back to it, and fails loudly, when unset. |
 | `ADMIN_PASSWORD` | Portainer stack env | password of the container's `admin` user |
 | `TZ` | Portainer stack env | container timezone, defaults to `America/Sao_Paulo` |
 

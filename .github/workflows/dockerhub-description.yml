@@ -55,6 +55,7 @@ jobs:
           echo "Nenhum link relativo. Pode publicar."
 
       - name: Publicar a descricao
+        id: publish
         uses: peter-evans/dockerhub-description@v5
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -69,3 +70,30 @@ jobs:
           short-description: 'CUPS print server, multi-arch (amd64/arm64), rebuilt weekly and published only on real change.'
           readme-filepath: ./README.md
           enable-url-completion: true
+
+      # 'Forbidden' aqui e quase sempre escopo de token, nao credencial errada:
+      # a action autentica primeiro e so entao leva 403 no PATCH. Sem esta
+      # explicacao o log mostra a palavra 'Forbidden' e mais nada.
+      - name: Explicar a falha
+        if: failure() && steps.publish.outcome == 'failure'
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'TXT'
+          ## A descricao do Docker Hub nao foi atualizada
+
+          O endpoint que edita a descricao do repositorio **nao aceita um token de
+          push**. Ele exige a senha da conta ou um Personal Access Token com escopo
+          `Read, Write, Delete`.
+
+          Para resolver, uma vez so:
+
+          1. Docker Hub, Account Settings, Personal access tokens, Generate new token
+          2. Escopo: **Read, Write, Delete**
+          3. No GitHub: Settings, Secrets and variables, Actions, New repository secret
+          4. Nome: `DOCKERHUB_DESCRIPTION_TOKEN`, valor: o token gerado
+          5. Rode este workflow de novo pela aba Actions
+
+          Enquanto isso nao for feito, a pagina do Docker Hub segue mostrando a
+          descricao antiga. Nada mais e afetado: o build e a publicacao das imagens
+          usam outro token e continuam funcionando.
+          TXT
+          echo "::error::Descricao nao publicada. Veja o resumo da run: falta um PAT com escopo Read, Write, Delete em DOCKERHUB_DESCRIPTION_TOKEN."

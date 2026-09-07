@@ -69,7 +69,7 @@ jobs:
       merge_matrix: ${{ steps.plan.outputs.merge_matrix }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # fetch-depth: 0, nao 2. Com clone raso, um push de mais de 2 commits
           # faz o 'git diff' abaixo falhar em silencio e a deteccao de Dockerfile
@@ -227,7 +227,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -696,7 +696,7 @@ jobs:
       group: cups-record
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: master
           fetch-depth: 0
@@ -836,7 +836,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: master
 

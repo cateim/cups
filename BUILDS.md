@@ -1,8 +1,7 @@
-# Publicacoes
+## 2026-09-13 - reconstrucao
 
-Uma linha por publicacao, mais recente em cima. A lista completa de pacotes e de
-CVEs de cada reconstrucao esta no relatorio linkado e nas annotations OCI da
-imagem.
+- `2.4.10-debian-20260913.42`: 32 atualizado(s), 0 novo(s), 0 removido(s) de 316 pacotes. CVEs: CVE-2025-15649, CVE-2026-0864, CVE-2026-11822, CVE-2026-11824, CVE-2026-11940, CVE-2026-11972 e mais 37. [relatorio](.github/builds/2.4.10-debian-20260913.42.md)
+- `2.4.16-ubuntu-20260913.42`: 13 atualizado(s), 0 novo(s), 0 removido(s) de 327 pacotes. CVEs: CVE-2026-12087, CVE-2026-13221, CVE-2026-15308, CVE-2026-15534, CVE-2026-19487, CVE-2026-19499 e mais 9. [relatorio](.github/builds/2.4.16-ubuntu-20260913.42.md)
 
 ## 2026-09-03 - reconstrucao
 

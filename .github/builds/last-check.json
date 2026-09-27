@@ -1,37 +1,37 @@
 {
-  "checked_at": "2026-09-20T08:27:55Z",
-  "run": "https://github.com/cateim/cups/actions/runs/35499508403",
+  "checked_at": "2026-09-27T09:07:35Z",
+  "run": "https://github.com/cateim/cups/actions/runs/36308217424",
   "variants": [
     {
       "variant": "debian",
-      "tag": "2.4.10-debian-20260920.43",
+      "tag": "2.4.10-debian-20260927.44",
       "cups": "2.4.10",
       "base_name": "docker.io/library/debian:trixie-20260918-slim",
       "base_digest": "sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a",
       "base_previous": "sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132",
-      "published": false,
-      "reason": "nenhuma mudanca de pacote",
-      "cves": "",
+      "published": true,
+      "reason": "4 atualizado(s), 0 novo(s), 0 removido(s)",
+      "cves": "CVE-2026-39919",
       "packages": {
         "total": 316,
-        "changed": 0,
+        "changed": 4,
         "added": 0,
         "removed": 0
       }
     },
     {
       "variant": "ubuntu",
-      "tag": "2.4.16-ubuntu-20260920.43",
+      "tag": "2.4.16-ubuntu-20260927.44",
       "cups": "2.4.16",
       "base_name": "docker.io/library/ubuntu:resolute-20260912",
       "base_digest": "sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78",
-      "base_previous": "sha256:513c074113a871b51a8d16ab445c88779d6452d937a164fb5cc479f32668a41d",
+      "base_previous": "sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78",
       "published": true,
-      "reason": "4 atualizado(s), 0 novo(s), 0 removido(s)",
-      "cves": "CVE-2026-39113,CVE-2026-56208,CVE-2026-56209,CVE-2026-56210,CVE-2026-56211,CVE-2026-62291,CVE-2026-62377",
+      "reason": "13 atualizado(s), 0 novo(s), 0 removido(s)",
+      "cves": "CVE-2026-11856,CVE-2026-13608,CVE-2026-15588,CVE-2026-16118,CVE-2026-18924,CVE-2026-32776,CVE-2026-32777,CVE-2026-32778,CVE-2026-39919,CVE-2026-41080,CVE-2026-45186,CVE-2026-56131,CVE-2026-56132,CVE-2026-56406,CVE-2026-56407,CVE-2026-56409,CVE-2026-56410,CVE-2026-56411,CVE-2026-58010,CVE-2026-58011,CVE-2026-58012,CVE-2026-58013,CVE-2026-58014,CVE-2026-58015,CVE-2026-58016,CVE-2026-66046,CVE-2026-72522,CVE-2026-74860,CVE-2026-76641,CVE-2026-76957,CVE-2026-80229,CVE-2026-80230,CVE-2026-80255,CVE-2026-82209,CVE-2026-8458,CVE-2026-86140,CVE-2026-8927,CVE-2026-9080",
       "packages": {
         "total": 327,
-        "changed": 4,
+        "changed": 13,
         "added": 0,
         "removed": 0
       }

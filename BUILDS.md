@@ -1,3 +1,8 @@
+## 2026-10-11 - reconstrucao
+
+- `2.4.10-debian-20261011.46`: 6 atualizado(s), 0 novo(s), 0 removido(s) de 316 pacotes. CVEs: CVE-2026-101258, CVE-2026-103226. [relatorio](.github/builds/2.4.10-debian-20261011.46.md)
+- `2.4.16-ubuntu-20261011.46`: 9 atualizado(s), 0 novo(s), 0 removido(s) de 327 pacotes. CVEs: CVE-2026-102620, CVE-2026-102621, CVE-2026-4271, CVE-2026-46675, CVE-2026-5119, CVE-2026-6324 e mais 15. [relatorio](.github/builds/2.4.16-ubuntu-20261011.46.md)
+
 ## 2026-10-04 - reconstrucao
 
 - `2.4.10-debian-20261004.45`: 8 atualizado(s), 0 novo(s), 0 removido(s) de 316 pacotes. CVEs: CVE-2026-32738, CVE-2026-32739, CVE-2026-32740, CVE-2026-32741, CVE-2026-32814, CVE-2026-32882 e mais 37. [relatorio](.github/builds/2.4.10-debian-20261004.45.md)

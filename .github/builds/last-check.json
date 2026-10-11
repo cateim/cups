@@ -1,37 +1,37 @@
 {
-  "checked_at": "2026-10-04T09:33:32Z",
-  "run": "https://github.com/cateim/cups/actions/runs/37192384746",
+  "checked_at": "2026-10-11T09:52:15Z",
+  "run": "https://github.com/cateim/cups/actions/runs/38129722932",
   "variants": [
     {
       "variant": "debian",
-      "tag": "2.4.10-debian-20261004.45",
+      "tag": "2.4.10-debian-20261011.46",
       "cups": "2.4.10",
-      "base_name": "docker.io/library/debian:trixie-20260918-slim",
-      "base_digest": "sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a",
+      "base_name": "docker.io/library/debian:trixie-20261005-slim",
+      "base_digest": "sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f",
       "base_previous": "sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a",
       "published": true,
-      "reason": "8 atualizado(s), 0 novo(s), 0 removido(s)",
-      "cves": "CVE-2026-32738,CVE-2026-32739,CVE-2026-32740,CVE-2026-32741,CVE-2026-32814,CVE-2026-32882,CVE-2026-35189,CVE-2026-35191,CVE-2026-3949,CVE-2026-3950,CVE-2026-41069,CVE-2026-41071,CVE-2026-42772,CVE-2026-46675,CVE-2026-47178,CVE-2026-47247,CVE-2026-47251,CVE-2026-47254,CVE-2026-47709,CVE-2026-47714,CVE-2026-48029,CVE-2026-49271,CVE-2026-50142,CVE-2026-54240,CVE-2026-54241,CVE-2026-54872,CVE-2026-54873,CVE-2026-54875,CVE-2026-72897,CVE-2026-75804,CVE-2026-75805,CVE-2026-75806,CVE-2026-77696,CVE-2026-84383,CVE-2026-84384,CVE-2026-84444,CVE-2026-84446,CVE-2026-84447,CVE-2026-84448,CVE-2026-84450,CVE-2026-84451,CVE-2026-84782,CVE-2026-84784",
+      "reason": "6 atualizado(s), 0 novo(s), 0 removido(s)",
+      "cves": "CVE-2026-101258,CVE-2026-103226",
       "packages": {
         "total": 316,
-        "changed": 8,
+        "changed": 6,
         "added": 0,
         "removed": 0
       }
     },
     {
       "variant": "ubuntu",
-      "tag": "2.4.16-ubuntu-20261004.45",
+      "tag": "2.4.16-ubuntu-20261011.46",
       "cups": "2.4.16",
       "base_name": "docker.io/library/ubuntu:resolute-20260927",
       "base_digest": "sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7",
-      "base_previous": "sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78",
+      "base_previous": "sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7",
       "published": true,
-      "reason": "6 atualizado(s), 0 novo(s), 0 removido(s)",
-      "cves": "CVE-2026-35189,CVE-2026-35191,CVE-2026-42772,CVE-2026-54872,CVE-2026-54873,CVE-2026-54875,CVE-2026-72897,CVE-2026-75804,CVE-2026-75805,CVE-2026-84384,CVE-2026-84446,CVE-2026-84447,CVE-2026-84448,CVE-2026-94287",
+      "reason": "9 atualizado(s), 0 novo(s), 0 removido(s)",
+      "cves": "CVE-2026-102620,CVE-2026-102621,CVE-2026-4271,CVE-2026-46675,CVE-2026-5119,CVE-2026-6324,CVE-2026-66339,CVE-2026-76781,CVE-2026-77014,CVE-2026-77680,CVE-2026-85197,CVE-2026-85534,CVE-2026-86138,CVE-2026-86139,CVE-2026-86142,CVE-2026-86143,CVE-2026-86144,CVE-2026-93312,CVE-2026-93313,CVE-2026-93314,CVE-2026-95512",
       "packages": {
         "total": 327,
-        "changed": 6,
+        "changed": 9,
         "added": 0,
         "removed": 0
       }

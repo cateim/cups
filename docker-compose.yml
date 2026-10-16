@@ -85,7 +85,8 @@ services:
       - /run/udev:/run/udev:ro
     ports:
       - "631:631"
-    network_mode: bridge
+    networks:
+      - cups-net
     hostname: cups
     # Da tempo ao cupsd de gravar job.cache, printers.conf e subscriptions.conf
     # antes do SIGKILL. O default do Docker e 10s. O entrypoint termina em
@@ -99,3 +100,10 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+# Rede com nome próprio: sem o name:, o Compose cria "cups_default", e na rede
+# bridge padrão do Docker o container alcança os das outras stacks pelo IP.
+networks:
+  cups-net:
+    name: cups-net
+    driver: bridge

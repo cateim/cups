@@ -104,9 +104,12 @@ services:
       - /etc/localtime:/etc/localtime:ro
     ports:
       - "631:631"
-    # 'bridge' with the port published is the portable choice. 'host' makes
-    # network discovery (AirPrint/Bonjour) easier, at the cost of isolation.
-    network_mode: bridge
+    # A bridge network of its own, with the port published, is the portable
+    # choice: Docker's default 'bridge' would let every other container on it
+    # reach CUPS by IP. 'host' makes network discovery (AirPrint/Bonjour)
+    # easier, at the cost of isolation.
+    networks:
+      - cups-net
     hostname: cups
     # Gives cupsd time to write job.cache and printers.conf before SIGKILL.
     stop_grace_period: 30s
@@ -117,6 +120,12 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+# Named, so Compose does not create "cups_default".
+networks:
+  cups-net:
+    name: cups-net
+    driver: bridge
 ```
 
 ### ⚠️ Upgrading from an image built before 2026-09

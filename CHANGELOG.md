@@ -69,6 +69,11 @@ and this project uses CalVer (`YYYY.M.R`).
 
 ### Changed
 
+- The stack runs on a bridge network of its own, `cups-net`, declared with
+  `name:` (`docker-compose.yml` and the examples of both READMEs). On Docker's
+  default `bridge` every other container there could reach CUPS by IP. Port 631
+  stays published, so printing and the web UI do not change; a server running
+  the old stack needs one redeploy.
 - Tag retention rewritten as an allow list with five protections and a
   `MAX_DELETE` brake, shipping with `DRY_RUN` enabled. The previous rule deleted
   anything matching `^(ubuntu|debian)$`, which would now delete the pipeline's

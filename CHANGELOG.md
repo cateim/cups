@@ -12,7 +12,7 @@ and this project uses CalVer (`YYYY.M.R`).
 
 ## [Unreleased]
 
-### Added
+### ✨ Added
 
 - Immutable image tags, `<cups-version>-<variant>-<YYYYMMDD>.<run_number>`, cut
   once and never rewritten. Moving tags (`latest`, `ubuntu`, `debian`,
@@ -73,7 +73,7 @@ and this project uses CalVer (`YYYY.M.R`).
   `raw.githubusercontent.com` URL, because README.md is also the Docker Hub
   description and a relative path would break there.
 
-### Changed
+### 🔧 Changed
 
 - The stack runs on a bridge network of its own, `cups-net`, declared with
   `name:` (`docker-compose.yml` and the examples of both READMEs). On Docker's
@@ -101,7 +101,7 @@ and this project uses CalVer (`YYYY.M.R`).
 - The compose example in both READMEs was realigned with the repository's own
   `docker-compose.yml`; the three copies had drifted apart.
 
-### Removed
+### 🗑️ Removed
 
 - The `sudo` package and the `admin ALL=(ALL) NOPASSWD:ALL` sudoers rule. With
   both in place, anyone who learned the web UI password at :631 became root
@@ -112,7 +112,7 @@ and this project uses CalVer (`YYYY.M.R`).
 - Build headers that nothing ever compiled against: `python3-dev`,
   `libjpeg-dev`, `zlib1g-dev` and `python3-setuptools`.
 
-### Fixed
+### 🐛 Fixed
 
 - Weekly rebuilds no longer skip silently. The gate asked whether the tag
   `<cups-version>-<os>` already existed, and since the CUPS version rarely
@@ -146,7 +146,7 @@ and this project uses CalVer (`YYYY.M.R`).
 
 ## [2026.7.1] - 2026-07-07
 
-### Changed
+### 🔧 Changed
 
 - Multi-arch builds run natively on amd64 and arm64 runners, pushing by digest
   and merging the manifests, replacing QEMU emulation.
@@ -158,57 +158,57 @@ and this project uses CalVer (`YYYY.M.R`).
 
 ## [2026.4.2] - 2026-04-30
 
-### Added
+### ✨ Added
 
 - Conditional builds, tag handling, and automated cleanup of old Docker Hub tags.
 
-### Fixed
+### 🐛 Fixed
 
 - Status code capture in the `check_tag` helper.
 
 ## [2026.4.1] - 2026-04-05
 
-### Added
+### ✨ Added
 
 - Portuguese translation of the README.
 - Project compose file.
 
-### Changed
+### 🔧 Changed
 
 - Switched the container to bridge networking.
 - Standardised the image build workflow.
 
 ## [2025.11.1] - 2025-11-25
 
-### Added
+### ✨ Added
 
 - USB printer troubleshooting guide in the README.
 
-### Changed
+### 🔧 Changed
 
 - Docker Compose configuration.
 
 ## [2025.10.1] - 2025-10-30
 
-### Added
+### ✨ Added
 
 - Debian Dockerfile and the multi-distro build matrix.
 - Python and image libraries in both Dockerfiles.
 
-### Changed
+### 🔧 Changed
 
 - Docker tag generation in the workflow.
 
 ## [2025.9.1] - 2025-09-22
 
-### Added
+### ✨ Added
 
 - Initial CUPS image on Ubuntu, the build workflow, the entrypoint script and the
   README.
 - `printer-driver-foo2zjs`.
 - `linux/amd64` alongside `linux/arm64`.
 
-### Security
+### 🔐 Security
 
 - Rebuilt to pick up fixes for CVE-2024-28219, CVE-2025-47273 and CVE-2024-6345.
 

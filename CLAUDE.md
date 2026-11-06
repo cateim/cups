@@ -46,7 +46,15 @@ docker-entrypoint.sh      sets the admin password, seeds /etc/cups, execs cupsd
 docker-compose.yml        the manifest Portainer applies, not an example
 BUILDS.md                 one line per publication, newest first
 CHANGELOG.md              repository changelog (Keep a Changelog 1.1.0)
+assets/icon.svg, icon.png the original CUPS icon (OpenPrinting/cups desktop/,
+                          Apache 2.0), unchanged; README logo and folder icon
 ```
+
+The READMEs load the icon from its absolute `raw.githubusercontent.com` URL,
+never a relative path: README.md is also the Docker Hub description, where a
+relative path resolves against hub.docker.com. `assets/` is outside the build
+context (`.dockerignore` allows only `docker-entrypoint.sh`) and outside the
+`build.yml` push paths, so changing it never rebuilds the image.
 
 ## Build pipeline
 

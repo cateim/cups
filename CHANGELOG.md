@@ -66,6 +66,12 @@ and this project uses CalVer (`YYYY.M.R`).
   that every image tag the README mentions actually exists on Docker Hub.
 - An upgrade note in both READMEs about the removal of `sudo`, since this is a
   public image and someone may be running `docker exec -u admin cups sudo ...`.
+- The original CUPS icon at the top of both READMEs, credited in the Source Code
+  section. `assets/icon.svg` and `assets/icon.png` (512 px) are `desktop/cups.svg`
+  and `desktop/cups-512.png` of OpenPrinting/cups, by Michael Sweet, Apache 2.0,
+  copied unchanged. The READMEs point at the PNG by its absolute
+  `raw.githubusercontent.com` URL, because README.md is also the Docker Hub
+  description and a relative path would break there.
 
 ### Changed
 

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/CaTeIM/cups/master/assets/icon.png" width="128" alt="CUPS">
+</p>
+
 # Servidor de Impressão CUPS - Imagem Docker Multi-Arquitetura 🖨️🐳
 
 ![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/CaTeIM/cups/build.yml?branch=master&style=for-the-badge)
@@ -13,6 +17,8 @@ Esta é uma imagem Docker multi-arquitetura do **[CUPS (Common Unix Printing Sys
 Este projeto é de código aberto. O `Dockerfile`, o script de inicialização e o workflow de build do GitHub Actions estão todos disponíveis no repositório do projeto.
 
 ➡️ **[Repositório no GitHub: CaTeIM/cups](https://github.com/CaTeIM/cups)**
+
+O logo no topo é o ícone original do CUPS, de Michael Sweet, copiado sem alteração do [OpenPrinting/cups](https://github.com/OpenPrinting/cups/tree/master/desktop) sob a Apache License 2.0.
 
 ## 🐳 Tags Disponíveis
 

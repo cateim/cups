@@ -14,8 +14,8 @@
 *.sh text eol=lf
 
 # ---- Binary ----
-# Forward guard: none of these exist yet, they are here so a future .ppd or a
-# README screenshot cannot be mangled by the eol=lf rule above.
+# Only assets/icon.png exists today; the rest are a forward guard, so a future
+# .ppd or a README screenshot cannot be mangled by the eol=lf rule above.
 *.png binary
 *.jpg binary
 *.pdf binary
